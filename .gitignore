@@ -1,0 +1,17 @@
+# build products
+*.tar.gz
+build/
+dist/
+__pycache__/
+*.pyc
+
+# third-party sound banks are strictly local: the bank folders, extracted folders and every archive / patch / SysEx file
+banks/*
+banks_*/
+*.zip
+*.h2p
+*.syx
+!tests/bank_fixture.h
+
+# Local-only tooling stays on the owner's disk.
+tuning/*
