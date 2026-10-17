@@ -1,0 +1,208 @@
+{
+  "title": "TinyPro5",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Prophet-5 style 5-voice",
+        "virtual analog synth.",
+        "SSM-style filter,",
+        "Poly-Mod, drift.",
+        "",
+        "32 factory programs",
+        "plus your own Repro-5",
+        "(.h2p) and Prophet-5",
+        "(.syx) banks.",
+        "",
+        "Presets page: browse.",
+        "Pages: Filter, Osc,",
+        "Amp+Mix, Voice+Sys,",
+        "More 1/2, Select Bank."
+      ]
+    },
+    {
+      "title": "Pages",
+      "children": [
+        {
+          "title": "1: Filter",
+          "lines": [
+            "Enc 1 Cutoff",
+            "Enc 2 Reso",
+            "Enc 3 EnvAmt: filter",
+            "  envelope depth",
+            "Enc 4 KbdTrk: key",
+            "  tracking",
+            "Enc 5 FAtk",
+            "Enc 6 FDecay",
+            "Enc 7 FSus",
+            "Enc 8 FRel"
+          ]
+        },
+        {
+          "title": "2: Osc",
+          "lines": [
+            "Enc 1 AWave: saw..pulse",
+            "Enc 2 APW: A width",
+            "Enc 3 BWave: saw/tri/",
+            "  pulse",
+            "Enc 4 BPW: B width",
+            "Enc 5 BPitch: B semis",
+            "Enc 6 Sync: A to B",
+            "Enc 7 PM-Fenv: filter",
+            "  env Poly-Mod depth",
+            "Enc 8 PM-OscB: osc B",
+            "  Poly-Mod depth"
+          ]
+        },
+        {
+          "title": "3: Amp+Mix",
+          "lines": [
+            "Enc 1-4 amp envelope:",
+            "  AAtk ADecay ASus",
+            "  ARel",
+            "Enc 5 AVol: osc A",
+            "Enc 6 BVol: osc B",
+            "Enc 7 Noise",
+            "Enc 8 Volume"
+          ]
+        },
+        {
+          "title": "4: Voice+Sys",
+          "lines": [
+            "Mode: Poly, Unison,",
+            "  Mono, Legato",
+            "Voices: 1 to 5",
+            "Detune: unison spread",
+            "LFOAmt: LFO depth",
+            "Reload/Save/Revert:",
+            "  HOLD the knob and",
+            "  CLICK the jog. Jog",
+            "  = No/Yes, click OK,",
+            "  Back cancels.",
+            "  (List: click row.)",
+            "Order: Bank order or",
+            "  A-Z preset list",
+            "Preset knob = the",
+            "  Presets page."
+          ]
+        },
+        {
+          "title": "More 1 / More 2",
+          "lines": [
+            "Settings that have no",
+            "encoder on pages 1-4:",
+            "PM-Dest, LFORate,",
+            "LFOWave, LFODest,",
+            "Glide, Drift, APitch,",
+            "BFine, NColor, BLFO,",
+            "BKbd, ModWhl."
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Presets and order",
+      "lines": [
+        "Presets page: turn to",
+        "scroll, the program",
+        "loads as you go.",
+        "",
+        "Bank order shows the",
+        "address: 3-1 = group",
+        "3, program 1.",
+        "A-Z (Order, page 4)",
+        "sorts by name and",
+        "keeps the address.",
+        "Switching keeps the",
+        "current program.",
+        "",
+        "Standalone UI: jog",
+        "click toggles order."
+      ]
+    },
+    {
+      "title": "Factory groups",
+      "lines": [
+        "32 original programs",
+        "in 4 groups of 8:",
+        "",
+        "1 Basses, sequences",
+        "  (mono, for ostinatos)",
+        "2 Keys, plucks",
+        "3 Pads, swells",
+        "4 Stingers, drones,",
+        "  sweeps, effects",
+        "",
+        "Groups 2 and 3 are",
+        "Poly, for chords."
+      ]
+    },
+    {
+      "title": "Voice modes",
+      "lines": [
+        "Poly: up to Voices",
+        "  notes, oldest steal.",
+        "Unison: Voices stack",
+        "  on the last note;",
+        "  Detune spreads them.",
+        "Mono: one voice, last",
+        "  note, envelopes",
+        "  retrigger.",
+        "Legato: like Mono but",
+        "  overlapping notes",
+        "  only change pitch.",
+        "Glide: More 1 page."
+      ]
+    },
+    {
+      "title": "Reload/Save/Revert",
+      "lines": [
+        "To use Reload, Save",
+        "or Revert:",
+        "1 HOLD its knob and",
+        "  CLICK the jog.",
+        "  (List view: click",
+        "  the row.)",
+        "2 Jog right = Yes,",
+        "  jog left = No.",
+        "3 Click to confirm.",
+        "  Back cancels.",
+        "",
+        "Turning the knob",
+        "does nothing.",
+        "",
+        "RELD Reload: undo all",
+        "  tweaks since load,",
+        "  Voices included.",
+        "SAVE Save: keep this",
+        "  sound for the",
+        "  program, any bank.",
+        "REVT Revert: erase the",
+        "  saved version.",
+        "NONE = nothing to do.",
+        "Volume and mod wheel",
+        "are not reset."
+      ]
+    },
+    {
+      "title": "Banks",
+      "lines": [
+        "Put .zip .syx .h2p",
+        "files in the module's",
+        "banks/ folder, then",
+        "reload the module.",
+        "",
+        "Select Bank page lists",
+        "each bank by name.",
+        "Click one to load it.",
+        "",
+        "Repro-5 patches only;",
+        "Repro-1 is skipped.",
+        "Save works on every",
+        "bank. Edits go to",
+        "user/*.tp5u; bank",
+        "files stay untouched."
+      ]
+    }
+  ]
+}
