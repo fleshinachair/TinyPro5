@@ -24,7 +24,7 @@ const char *tp5_page_names[TP5_PAGES] = { "Filter", "Osc", "Amp+Mix", "Voice+Sys
 #define TP5_EXTRA_PAGES 2
 static const int8_t k_extra_pages[TP5_EXTRA_PAGES][TP5_KNOBS] = {
     { P_PM_DEST, P_LFO_RATE, P_LFO_WAVE, P_LFO_DEST, P_GLIDE, P_DRIFT, P_A_SEMI, P_B_FINE },
-    { P_NOISE_COL, P_B_LFO, P_B_KBD, P_MODWHEEL, P_REV, P_VINTAGE, -1, -1 },   /* P_VEL_FILT / P_VEL_AMP stay off every page: programs carry them */
+    { P_NOISE_COL, P_B_LFO, P_B_KBD, P_MODWHEEL, P_REV, P_VINTAGE, -1, -1 },   /* P_VEL_FILT / P_VEL_AMP / P_DECLICK stay off every page: programs carry them */
 };
 static const char *k_extra_names[TP5_EXTRA_PAGES] = { "More 1", "More 2" };
 
@@ -114,7 +114,7 @@ static void put_meta(jw *w, int id)
 }
 
 /* Internal parameters have no control of their own on any page: programs carry them (REV_4 velocity depths). */
-static int is_internal(int id) { return id == P_VEL_FILT || id == P_VEL_AMP; }
+static int is_internal(int id) { return id == P_VEL_FILT || id == P_VEL_AMP || id == P_DECLICK; }
 
 /* `skip_internal`: module.json is capped at 8 KB by the standalone loader, so it leaves the internal parameters out; the runtime
  * chain_params answer (get_param) always lists every parameter. */

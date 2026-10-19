@@ -6,6 +6,7 @@
  *   rev_compare.wav                  Rev 2, Rev 4, Rev 2, Rev 4 (2 s phrases)
  *   rev_compare_switch.wav           the same, but each phrase set up the way the Rev switch does it (Rev 2 also gets vintage 0.65)
  *   pad_pressure.wav                 two held notes with polyphonic pressure rising 0 -> 127 over 3 s: 4 s in Rev 2, then 4 s in Rev 4
+ *   test_arp_click.wav               a 16th-note arpeggio (125 ms steps, accented velocities) in Rev 2, then Rev 4 poly, then Rev 4 mono: listen for ticks at the note starts
  *   velocity_response.wav            note 48 at velocity 30, 64, 100, 127 (1 s each) through four velocity curves (A-D, see report_velocity_audit)
  */
 #include <math.h>
@@ -384,6 +385,26 @@ static void write_files(const char *dir)
     if (wav_open(&w, dir, "test_rev4.wav")) { phrase(&w, 1, 0); phrase(&w, 1, 0); wav_close(&w, dir, "test_rev4.wav"); }
     if (wav_open(&w, dir, "rev_compare.wav")) { for (i = 0; i < 4; i++) phrase(&w, i & 1, 0); wav_close(&w, dir, "rev_compare.wav"); }
     if (wav_open(&w, dir, "rev_compare_switch.wav")) { for (i = 0; i < 4; i++) phrase(&w, i & 1, 1); wav_close(&w, dir, "rev_compare_switch.wav"); }
+    if (wav_open(&w, dir, "test_arp_click.wav")) {
+        static const int seq[8] = { 48, 55, 60, 64, 67, 64, 60, 55 }, vels[8] = { 120, 60, 90, 50, 127, 70, 100, 55 };
+        int part, s;
+        for (part = 0; part < 3; part++) {               /* Rev 2 poly, Rev 4 poly, Rev 4 mono */
+            audition_patch(part > 0, 1);
+            tp5_set_param(&E, P_RESO, 0.7f); tp5_set_param(&E, P_ENVAMT, 0.5f); tp5_set_param(&E, P_F_REL, 0.7f); tp5_set_param(&E, P_A_REL, 0.7f);
+            tp5_set_param(&E, P_A_ATK, 0.f); tp5_set_param(&E, P_F_ATK, 0.f); tp5_set_param(&E, P_A_SUS, 0.7f);
+            if (part == 2) tp5_set_param(&E, P_UNISON, 2.f);
+            for (s = 0; s < 16; s++) {
+                int done = 0;
+                tp5_note_on(&E, seq[s & 7], vels[s & 7]);
+                for (; done < 5512; done += 128) {
+                    if (done == 5512 * 7 / 10 / 128 * 128) tp5_note_off(&E, seq[s & 7]);
+                    wav_block(&w, 128);
+                }
+            }
+            tp5_all_notes_off(&E);
+        }
+        wav_close(&w, dir, "test_arp_click.wav");
+    }
     if (wav_open(&w, dir, "velocity_response.wav")) {
         static const int vels[4] = { 30, 64, 100, 127 };
         int c, v, done;

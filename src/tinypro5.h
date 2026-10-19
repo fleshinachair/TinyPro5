@@ -46,6 +46,8 @@ typedef enum {
     P_VINTAGE,              /* 0..1 macro: extra voice-to-voice component drift, envelope variance and oscillator micro-detune (0 adds nothing) */
     P_VEL_FILT,             /* REV_4: how much note velocity scales the filter envelope (internal: not on a front-panel page, programs carry it) */
     P_VEL_AMP,              /* REV_4: how much note velocity scales the amp envelope (internal, as above) */
+    P_DECLICK,              /* 0..1: rounds the corners of the amp and filter envelopes (a one-pole of up to 1.5 ms) so fast attacks and the attack -> decay corner do not tick on a
+                             * resonant filter; 0 = off (the factory bank), programs of every other bank load with 1 (internal, as above) */
     P_VOICES,               /* voice count 1..5: polyphony in Poly, stack size in Unison; a performance setting, not owned by presets */
     P_BANK,                 /* active bank: 0 = the 32 factory programs, 1.. = custom banks found in banks/ (src/bank.h) */
     P_SORT,                 /* preset list order: 0 = bank order (1-1 ...), 1 = alphabetical */
@@ -98,7 +100,8 @@ typedef struct {
     int     note;
     uint8_t gate, sustained, used, kick;   /* kick: seed a self-oscillating filter on the first sample of a note */
     uint32_t age;
-    float   vel;
+    float   amp_s, fenv_s;      /* the amp / filter envelope after the declick smoothing (equal to the envelope itself when P_DECLICK is 0) */
+    float   vel, vel_sm;        /* note velocity 0..1 and the value the gain / filter-envelope scaling actually follows (eased over ~2 ms when a sounding voice is retriggered) */
     float   f_env, a_env;
     uint8_t f_stage, a_stage;
     tp5_ladder filt;
@@ -139,7 +142,7 @@ typedef struct {
     float   lim_rel;            /* release coefficient */
     float   prog_gain, gain_sm; /* the loaded program's output gain (bank table) and its smoothed value */
     int     base_voices;        /* the voice count when the program was loaded: Reload puts it back (the count itself is a performance setting, not part of a program) */
-    float   sm_coef;
+    float   sm_coef, vel_coef;
     float   dr_c[3], dr_g[3];   /* drift band coefficients / normalisers */
     /* user preset overlay (Save) */
 

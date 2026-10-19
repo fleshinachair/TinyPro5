@@ -71,6 +71,7 @@ const tp5_param_info tp5_params[P_COUNT] = {
     [P_VINTAGE]   = { "vintage",     "Vintage", 0.f,   1.f,   0.00f, 0 },
     [P_VEL_FILT]  = { "vel_filter",  "VelFilt", 0.f,   1.f,   0.00f, 0 },
     [P_VEL_AMP]   = { "vel_amp",     "VelAmp",  0.f,   1.f,   0.00f, 0 },
+    [P_DECLICK]   = { "declick",     "Declick", 0.f,   1.f,   0.00f, 0 },
     [P_VOICES]    = { "voice_count", "Voices",  1.f,   5.f,   5.00f, 1 },
     [P_BANK]      = { "bank",        "Bank",    0.f,   (float)(TP5_MAX_BANKS - 1), 0.f, 1 },
     [P_SORT]      = { "preset_sort", "Order",   0.f,   1.f,   0.00f, 1 },
@@ -235,7 +236,7 @@ static inline void pmb_weights(float w, float *ws, float *wt, float *wp)
  * bit for bit as before the switch existed.
  *   filter    : REV_4 gives back part of the passband the feedback takes (input gain 1 + 0.5 k), raises the saturation knee 25 % and trims the
  *               output from k = 1 up (about -1.4 dB at reso 0.4, -4.5 dB at reso 1) so the louder passband stays inside the master headroom.
- *   envelopes : REV_4 attacks in 0.6x the time and decays / releases in 0.7x (same curve shapes, so the end-to-end times scale the same way).
+ *   envelopes : REV_4 attacks in 0.6x the time (never under 3 ms) and decays / releases in 0.7x (same curve shapes, so the end-to-end times scale the same way).
  *   velocity  : REV_4 scales the filter envelope by 1 - VelFilt (1 - vel) and the amp level by 1 - VelAmp (1 - vel), the Repro-5 law
  *               (full depth: the softest note has no envelope / no level). Rev 2 keeps its fixed 0.7 + 0.3 vel amp response.
  *   aftertouch: REV_4 sends pressure to LFO depth (+0.6 at full pressure) and cutoff (+3 octaves). Channel pressure (0xD0) acts on every voice,
@@ -243,10 +244,12 @@ static inline void pmb_weights(float w, float *ws, float *wt, float *wp)
  * Vintage (all engines) adds, per voice: Drift (+0.5 at 1), static oscillator micro-detune (up to ~3.8 cents) and envelope-rate variance (+-12 %). */
 #define TP5_REV4_COMP        0.50f
 #define TP5_REV4_KNEE        0.25f
+#define TP5_REV4_MIN_ATTACK  0.003f      /* seconds: the shortest full-scale attack ramp in Rev 4 (a sub-millisecond ramp on a low bass note is a click on every repeat) */
 #define TP5_REV4_TRIM_LOW    0.14f
 #define TP5_REV4_TRIM_HIGH   0.08f
 #define TP5_REV4_ATK_SCALE   0.60f
 #define TP5_REV4_TAU_SCALE   0.70f
+#define TP5_DECLICK_S        0.0015f     /* envelope smoothing time constant at P_DECLICK = 1 */
 #define TP5_AT_LFO           0.60f
 #define TP5_AT_CUTOFF_OCT    3.00f
 #define TP5_VINT_DRIFT       0.50f
@@ -331,9 +334,11 @@ static inline float env_tick(float *env, uint8_t *stage, const tp5_env_coefs *c,
 static void env_coefs(tp5_env_coefs *c, float sr, float a, float d, float s, float r, float tscale, int amp, float rev)
 {
     const float asc = 1.f - rev * (1.f - TP5_REV4_ATK_SCALE), tsc = 1.f - rev * (1.f - TP5_REV4_TAU_SCALE);
-    c->atk = 1.f / (atk_ramp_time(a) * asc * sr);
-    c->dec = 1.f - expf(-1.f / (dec_tau(d) * tscale * tsc * sr));
-    c->rel = 1.f - expf(-1.f / (rel_tau(r) * tscale * tsc * sr));
+    /* Rev 4 speeds the envelopes up, but never past Rev 2's own fastest decay / release (knob 0), and its attack ramp never gets shorter than 3 ms: a ramp of a
+     * few samples is a click on every repeated note (Rev 2's own 0.6 ms minimum is left as it was). The floors are 0 in Rev 2, so those times are untouched. */
+    c->atk = 1.f / (fmaxf(atk_ramp_time(a) * asc, rev * TP5_REV4_MIN_ATTACK) * sr);
+    c->dec = 1.f - expf(-1.f / (fmaxf(dec_tau(d) * tscale * tsc, rev * dec_tau(0.f) * tscale) * sr));
+    c->rel = 1.f - expf(-1.f / (fmaxf(rel_tau(r) * tscale * tsc, rev * rel_tau(0.f) * tscale) * sr));
     /* amp sustain: dead zone below knob 0.061, then linear; the filter envelope sustain is s^1.1 */
     c->sus = amp ? clampf((s - 0.061f) * (1.f / 0.939f), 0.f, 1.f) : powf(s, 1.1f);
 }
@@ -396,6 +401,7 @@ void tp5_init(tp5_engine *e, float sr)
     e->sr = sr;
     for (i = 0; i < P_COUNT; i++) e->p[i] = tp5_params[i].def;
     e->sm_coef = 1.f - expf(-1.f / (0.006f * sr));
+    e->vel_coef = 1.f - expf(-1.f / (0.002f * sr));
     e->lim_n = (int)(0.0015f * sr + 0.5f);                       /* 1.5 ms look-ahead */
     if (e->lim_n < 8) e->lim_n = 8;
     if (e->lim_n > TP5_LIMITER_LOOKAHEAD) e->lim_n = TP5_LIMITER_LOOKAHEAD;
@@ -439,6 +445,7 @@ static void program_sound(int bank, int idx, float *out)
     float ov[P_COUNT];
     for (i = 0; i < P_COUNT; i++)
         if (tp5_is_sound_param(i)) out[i] = tp5_params[i].def;
+    if (bank > 0) out[P_DECLICK] = 1.f;       /* the compiled-in factory bank is the audited reference and stays as it was; imported programs are declicked unless they say otherwise */
     nkv = tp5_bank_preset_kv(bank, idx, &kvs);
     for (i = 0; i < nkv; i++) {
         const tp5_kv *kv = &kvs[i];
@@ -642,6 +649,7 @@ static float glide_coef_from(float sr, float g)
 static void voice_trigger(tp5_engine *e, tp5_voice *v, int note, int vel, float uni_cents)
 {
     const float gc = glide_coef_from(e->sr, e->p[P_GLIDE]);
+    const int was_idle = v->a_stage == ENV_IDLE;
     v->note = note;
     v->pitch_tgt = (float)note;
     if (gc >= 1.f || !v->used) v->pitch = (float)note;
@@ -650,6 +658,7 @@ static void voice_trigger(tp5_engine *e, tp5_voice *v, int note, int vel, float 
     v->sustained = 0;
     v->age = ++e->age;
     v->vel = (float)vel * (1.f / 127.f);
+    if (was_idle) v->vel_sm = v->vel;             /* a silent voice takes the new velocity at once; a sounding one eases to it (no gain step) */
     v->uni_cents = uni_cents;
     v->press = v->press_sm = 0.f;                 /* a new note starts with no pressure */
     v->a_stage = ENV_ATK;
@@ -836,6 +845,7 @@ typedef struct {
     int   b_lfo, b_kbd, sync;
     float kbd, drift;
     float glide_coef;
+    float declick;      /* one-pole coefficient of the envelope smoothing, 0 = off */
     int   lfo_dest;     /* bit mask: 1 pitch, 2 pwm, 4 filter            */
 } blockctx;
 
@@ -870,14 +880,26 @@ static inline void voice_tick(tp5_engine *e, tp5_voice *v, int vi, const blockct
 
     amp = env_tick(&v->a_env, &v->a_stage, acoef, ets);
     if (v->a_stage == ENV_IDLE) {
+        v->amp_s = v->fenv_s = 0.f;
         v->f_env = 0.f; v->f_stage = ENV_IDLE;
         tp5_ladder_reset(&v->filt);
         return;
     }
     fenv = env_tick(&v->f_env, &v->f_stage, fcoef, ets);
-    fenv *= 1.f - rs * sm[SM_VEL_FILT] * (1.f - v->vel);                     /* Rev 4 velocity -> filter envelope level (exactly 1 in Rev 2) */
+    fenv *= 1.f - rs * sm[SM_VEL_FILT] * (1.f - v->vel_sm);
+    if (c->declick > 0.f) {      /* round off the corners (attack start / end, decay end): a kink in a resonant filter's cutoff or in the gain is a tick */
+        v->amp_s += (amp - v->amp_s) * c->declick;
+        v->fenv_s += (fenv - v->fenv_s) * c->declick;
+        amp = v->amp_s;
+        fenv = v->fenv_s;
+    } else {
+        v->amp_s = amp;
+        v->fenv_s = fenv;
+    }                     /* Rev 4 velocity -> filter envelope level (exactly 1 in Rev 2) */
 
     v->pitch += (v->pitch_tgt - v->pitch) * c->glide_coef;
+    v->vel_sm += (v->vel - v->vel_sm) * e->vel_coef;                         /* retriggering a sounding voice: ease the velocity scaling, no step */
+    if (fabsf(v->vel - v->vel_sm) < 1e-6f) v->vel_sm = v->vel;
     v->press_sm += (v->press - v->press_sm) * e->sm_coef;                    /* pressure arrives as sparse steps: smooth it per sample */
     if (fabsf(v->press - v->press_sm) < 1e-7f) v->press_sm = v->press;
 
@@ -985,7 +1007,7 @@ static inline void voice_tick(tp5_engine *e, tp5_voice *v, int vi, const blockct
      * floor, enough to start the oscillation within a few cycles. */
     if (k > TP5_SELFOSC_K) {
         mix += TP5_SELFOSC_NOISE * rnd_bipolar(&v->rng);
-        if (v->kick) mix += TP5_SELFOSC_KICK;
+        if (v->kick) mix += TP5_SELFOSC_KICK / (1.f + rs * TP5_REV4_COMP * k);   /* the Rev 4 input gain would make the key-down click up to 5x bigger */
     }
     v->kick = 0;
     y = tp5_ladder_tick_rev(&v->filt, mix, g, k, rs);
@@ -996,8 +1018,8 @@ static inline void voice_tick(tp5_engine *e, tp5_voice *v, int vi, const blockct
         return;
     }
     {   /* velocity -> level: Rev 2 keeps its fixed 0.7 + 0.3 vel response, Rev 4 follows VelAmp (crossfaded by the smoothed rev) */
-        const float vleg = 0.7f + 0.3f * v->vel;
-        const float vr4 = 1.f - sm[SM_VEL_AMP] * (1.f - v->vel);
+        const float vleg = 0.7f + 0.3f * v->vel_sm;
+        const float vr4 = 1.f - sm[SM_VEL_AMP] * (1.f - v->vel_sm);
         y *= amp * (vleg + rs * (vr4 - vleg)) * c->uni_gain;
     }
     *out_l += y * v->gain_l;
@@ -1026,6 +1048,7 @@ static void make_ctx(const tp5_engine *e, const float *p, blockctx *c)
     c->kbd = kbd_oct_per_oct(p[P_KBD]);
     c->drift = p[P_DRIFT];
     c->glide_coef = glide_coef_from(e->sr, p[P_GLIDE]);
+    c->declick = p[P_DECLICK] > 0.f ? 1.f - expf(-1.f / (p[P_DECLICK] * TP5_DECLICK_S * e->sr)) : 0.f;
     c->lfo_dest = lfo_mask[(int)p[P_LFO_DEST] & 7];
 }
 

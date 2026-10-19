@@ -548,6 +548,298 @@ static void test_switching(void)
     }
 }
 
+/* ---- retriggering: arpeggios and repeated notes ------------------------------------------------------------------------ */
+
+/* rms of `n` samples of the left channel, rendered */
+static double rms_of(tp5_engine *e, int n)
+{
+    double acc = 0.0;
+    int done = 0, k;
+    while (done < n) {
+        const int m = n - done > BLOCK ? BLOCK : n - done;
+        tp5_render(e, BL, BR, m);
+        for (k = 0; k < m; k++) acc += (double)BL[k] * BL[k];
+        done += m;
+    }
+    return sqrt(acc / n);
+}
+
+/* largest step of a ~2 kHz low-passed copy: a gain or level step shows up here, the patch's own waveform does not */
+static double lp_step(const float *y, int from, int to)
+{
+    float z = y[from > 64 ? from - 64 : 0];
+    double m = 0.0;
+    int i;
+    for (i = from > 64 ? from - 64 : 0; i < to; i++) {
+        const float nz = z + 0.25f * (y[i] - z);
+        if (i >= from && fabs((double)(nz - z)) > m) m = fabs((double)(nz - z));
+        z = nz;
+    }
+    return m;
+}
+
+/* a 16th-note arpeggio (125 ms steps, gate 70 %) with accented velocities; returns the worst note-start step relative to the tone's own steepest step */
+static double arp_run(int rev, float reso, int mono, float release, int *resets)
+{
+    static float y[5512 * 20 + 256];
+    static const int seq[8] = { 48, 55, 60, 64, 67, 64, 60, 55 }, vels[8] = { 120, 60, 90, 50, 127, 70, 100, 55 };
+    int n = 0, s, pid;
+    double worst = 0.0;
+    fresh(&E, rev);
+    if (rev) { E.p[P_VEL_AMP] = TP5_VEL_AMP_REV4_DEF; E.p[P_VEL_FILT] = TP5_VEL_FILT_REV4_DEF; E.sm[SM_VEL_AMP] = E.p[P_VEL_AMP]; E.sm[SM_VEL_FILT] = E.p[P_VEL_FILT]; }
+    tp5_set_param(&E, P_VOLUME, 0.5f);
+    tp5_set_param(&E, P_A_VOL, 1.f); tp5_set_param(&E, P_B_VOL, 0.7f); tp5_set_param(&E, P_B_WAVE, 0.f);
+    tp5_set_param(&E, P_CUTOFF, 0.3f); tp5_set_param(&E, P_RESO, reso); tp5_set_param(&E, P_ENVAMT, 0.5f);
+    tp5_set_param(&E, P_F_ATK, 0.f); tp5_set_param(&E, P_F_DEC, 0.5f); tp5_set_param(&E, P_F_SUS, 0.3f); tp5_set_param(&E, P_F_REL, release);
+    tp5_set_param(&E, P_A_ATK, 0.f); tp5_set_param(&E, P_A_DEC, 0.6f); tp5_set_param(&E, P_A_SUS, 0.7f); tp5_set_param(&E, P_A_REL, release);
+    if (mono) tp5_set_param(&E, P_UNISON, 2.f);
+    for (pid = 0; pid < 20; pid++) {
+        int done = 0;
+        s = pid;
+        tp5_note_on(&E, seq[s & 7], vels[s & 7]);
+        while (done < 5512) {
+            const int k = 5512 - done > 128 ? 128 : 5512 - done;
+            float l[BLOCK], r[BLOCK];
+            if (done <= 5512 * 7 / 10 && done + k > 5512 * 7 / 10) tp5_note_off(&E, seq[s & 7]);
+            tp5_render(&E, l, r, k);
+            memcpy(y + n, l, (size_t)k * sizeof(float));
+            n += k; done += k;
+        }
+    }
+    for (s = 4; s < 20; s++) {
+        const double typ = lp_step(y, s * 5512 - 350, s * 5512 - 16) + 1e-9, at = lp_step(y, s * 5512 - 2, s * 5512 + 12);
+        if (at / typ > worst) worst = at / typ;
+    }
+    *resets = (int)E.diag_nan_resets;
+    return worst;
+}
+
+static void test_retrigger(void)
+{
+    int rev, ri, resets = 0, i, finite = 1;
+    printf("[retriggering a sounding voice: arpeggios]\n");
+
+    /* the velocity scaling eases in over ~2 ms on a sounding voice, and is immediate on a silent one */
+    fresh(&E, 1);
+    saw_patch(&E);
+    tp5_set_param(&E, P_UNISON, 2.f);
+    E.p[P_VEL_AMP] = 0.6f; E.p[P_VEL_FILT] = 0.7f; E.sm[SM_VEL_AMP] = 0.6f; E.sm[SM_VEL_FILT] = 0.7f;
+    tp5_note_on(&E, 60, 127);
+    CHECK(E.voice[0].vel_sm == E.voice[0].vel, "a silent voice takes the note's velocity at once");
+    run(&E, 8192, &finite, NULL);
+    tp5_note_on(&E, 62, 30);
+    CHECK(E.voice[0].vel_sm > 0.99f && E.voice[0].vel < 0.25f, "retriggering a sounding voice leaves the scaling where it was (%.3f -> %.3f)", (double)E.voice[0].vel_sm, (double)E.voice[0].vel);
+    {
+        float prev = E.voice[0].vel_sm, worst = 0.f;
+        int n, t99 = -1;
+        for (n = 0; n < 2000; n++) {
+            tp5_render(&E, BL, BR, 1);
+            if (fabsf(E.voice[0].vel_sm - prev) > worst) worst = fabsf(E.voice[0].vel_sm - prev);
+            prev = E.voice[0].vel_sm;
+            if (t99 < 0 && fabsf(E.voice[0].vel_sm - E.voice[0].vel) < 0.01f) t99 = n;
+        }
+        printf("    velocity ease after a retrigger: largest per-sample move %.4f, within 1%% after %d samples (%.1f ms)\n", (double)worst, t99, t99 * 1000.0 / 44100.0);
+        CHECK(worst < 0.02f && t99 > 40 && t99 < 800, "ease is gradual (%.4f per sample) and finishes in a few ms (%d samples)", (double)worst, t99);
+    }
+    {   /* the output level follows: right after a hard-to-soft retrigger the level has only moved part of the way */
+        double before, first, last;
+        fresh(&E, 1);
+        saw_patch(&E);
+        tp5_set_param(&E, P_UNISON, 2.f); tp5_set_param(&E, P_CUTOFF, 0.9f);
+        E.p[P_VEL_AMP] = 0.6f; E.sm[SM_VEL_AMP] = 0.6f;
+        tp5_note_on(&E, 84, 127);
+        run(&E, 20000, &finite, NULL);
+        before = rms_of(&E, 84);
+        tp5_note_on(&E, 84, 30);
+        rms_of(&E, E.lim_n);                       /* the output is delayed by the limiter's look-ahead (1.5 ms) */
+        first = rms_of(&E, 42);
+        rms_of(&E, 2000);
+        last = rms_of(&E, 84);
+        printf("    127 -> 30 retrigger: level before %.4f, first 1 ms %.4f, settled %.4f\n", before, first, last);
+        CHECK(last < 0.85 * before, "the retrigger really lowers the level (%.2f)", last / before);
+        CHECK(first > last + 0.3 * (before - last) && first < before, "level is eased, not stepped: first ms %.4f between %.4f and %.4f", first, last, before);
+    }
+
+    /* Rev 4 never attacks / decays / releases faster than Rev 2's fastest settings */
+    {
+        tp5_env_coefs c2, c4;
+        fresh(&E, 0);
+        tp5_set_param(&E, P_A_ATK, 0.f); tp5_set_param(&E, P_A_DEC, 0.f); tp5_set_param(&E, P_A_REL, 0.f);
+        tp5_set_param(&E, P_F_ATK, 0.f); tp5_set_param(&E, P_F_DEC, 0.f); tp5_set_param(&E, P_F_REL, 0.f);
+        run(&E, 8192, &finite, NULL);
+        c2 = E.acoef;
+        fresh(&F, 1);
+        tp5_set_param(&F, P_A_ATK, 0.f); tp5_set_param(&F, P_A_DEC, 0.f); tp5_set_param(&F, P_A_REL, 0.f);
+        tp5_set_param(&F, P_F_ATK, 0.f); tp5_set_param(&F, P_F_DEC, 0.f); tp5_set_param(&F, P_F_REL, 0.f);
+        run(&F, 8192, &finite, NULL);
+        c4 = F.acoef;
+        printf("    knob 0 per-sample rates, Rev 2 / Rev 4: attack %.5f / %.5f, decay %.5f / %.5f, release %.5f / %.5f\n",
+               (double)c2.atk, (double)c4.atk, (double)c2.dec, (double)c4.dec, (double)c2.rel, (double)c4.rel);
+        CHECK(c4.atk <= c2.atk * 1.0001f && c4.dec <= c2.dec * 1.0001f && c4.rel <= c2.rel * 1.0001f, "Rev 4 at knob 0 is as fast as Rev 2, not faster");
+        CHECK(c4.atk <= 1.0f / (0.003f * SR) * 1.001f, "Rev 4 attack ramp is never shorter than 3 ms (%.1f ms)", 1000.0 / ((double)c4.atk * SR));
+        CHECK(F.fcoef.atk <= E.fcoef.atk * 1.0001f && F.fcoef.dec <= E.fcoef.dec * 1.0001f && F.fcoef.rel <= E.fcoef.rel * 1.0001f, "the filter envelope too");
+    }
+
+    /* a repeated low bass note with the fastest attack: the onset's high-frequency click (high-passed at ~1.5 kHz) is clearly smaller in Rev 4 */
+    {
+        double onset[2];
+        for (rev = 0; rev < 2; rev++) {
+            static float y[5512 * 12], hp[5512 * 12];
+            int n = 0, s, k;
+            float lz = 0.f;
+            double pk = 0.0;
+            fresh(&E, rev);
+            if (rev) { E.p[P_VEL_AMP] = TP5_VEL_AMP_REV4_DEF; E.p[P_VEL_FILT] = TP5_VEL_FILT_REV4_DEF; E.sm[SM_VEL_AMP] = E.p[P_VEL_AMP]; E.sm[SM_VEL_FILT] = E.p[P_VEL_FILT]; }
+            tp5_set_param(&E, P_VOLUME, 0.8f);
+            tp5_set_param(&E, P_A_VOL, 1.f); tp5_set_param(&E, P_B_VOL, 1.f); tp5_set_param(&E, P_A_WAVE, 1.f); tp5_set_param(&E, P_B_WAVE, 1.f);
+            tp5_set_param(&E, P_A_SEMI, -12.f); tp5_set_param(&E, P_B_SEMI, -12.f);
+            tp5_set_param(&E, P_CUTOFF, 0.2f); tp5_set_param(&E, P_RESO, 0.65f); tp5_set_param(&E, P_ENVAMT, 0.45f);
+            tp5_set_param(&E, P_F_ATK, 0.7f); tp5_set_param(&E, P_F_DEC, 0.8f); tp5_set_param(&E, P_F_SUS, 0.9f);
+            tp5_set_param(&E, P_A_ATK, 0.016f); tp5_set_param(&E, P_A_DEC, 1.f); tp5_set_param(&E, P_A_SUS, 1.f); tp5_set_param(&E, P_A_REL, 0.65f);
+            for (s = 0; s < 12; s++) {
+                int done = 0;
+                tp5_note_on(&E, 36, 100);
+                while (done < 5512) {
+                    const int m = 5512 - done > 128 ? 128 : 5512 - done;
+                    float l[BLOCK], r[BLOCK];
+                    if (done <= 3858 && done + m > 3858) tp5_note_off(&E, 36);
+                    tp5_render(&E, l, r, m);
+                    memcpy(y + n, l, (size_t)m * sizeof(float));
+                    n += m; done += m;
+                }
+            }
+            for (k = 0; k < n; k++) { lz += 0.18f * (y[k] - lz); hp[k] = y[k] - lz; }
+            for (s = 3; s < 12; s++) for (k = s * 5512; k < s * 5512 + 133; k++) if (fabs(hp[k]) > pk) pk = fabs(hp[k]);
+            onset[rev] = pk;
+        }
+        printf("    repeated bass note, attack knob 0.016: onset click (high-passed peak) Rev 2 %.4f, Rev 4 %.4f (%+.1f dB)\n", onset[0], onset[1], (double)db((float)(onset[1] / onset[0])));
+        CHECK(onset[1] < 0.6 * onset[0], "Rev 4 onset click %.4f is not clearly below Rev 2's %.4f", onset[1], onset[0]);
+    }
+
+    /* the self-oscillation key-down click is not made bigger by the Rev 4 input gain */
+    {
+        double pk[2];
+        for (rev = 0; rev < 2; rev++) {
+            int k;
+            float m = 0.f;
+            fresh(&E, rev);
+            tp5_set_param(&E, P_A_VOL, 0.f); tp5_set_param(&E, P_RESO, 0.7f); tp5_set_param(&E, P_CUTOFF, 0.6f); tp5_set_param(&E, P_ENVAMT, 0.f);
+            tp5_set_param(&E, P_A_ATK, 0.f); tp5_set_param(&E, P_A_SUS, 1.f);
+            run(&E, 8192, &finite, NULL);
+            tp5_note_on(&E, 60, 100);
+            for (k = 0; k < 200; k++) { tp5_render(&E, BL, BR, 1); if (fabsf(BL[0]) > m) m = fabsf(BL[0]); }
+            pk[rev] = m;
+        }
+        printf("    key-down click at reso 0.7 (empty mixer): Rev 2 %.5f, Rev 4 %.5f\n", pk[0], pk[1]);
+        CHECK(pk[0] > 0.0 && pk[1] <= pk[0], "Rev 4 click %.5f is no bigger than Rev 2's %.5f", pk[1], pk[0]);
+    }
+
+    /* 16th-note arpeggios, poly and mono, long and short releases: no note start is steeper than 2x the tone itself, the filter safety net never fires */
+    {
+        double worst = 0.0;
+        for (rev = 0; rev < 2; rev++)
+            for (ri = 0; ri < 3; ri++)
+                for (i = 0; i < 4; i++) {
+                    static const float resos[3] = { 0.2f, 0.7f, 0.95f };
+                    const double w = arp_run(rev, resos[ri], i & 1, i & 2 ? 0.85f : 0.2f, &resets);
+                    if (w > worst) worst = w;
+                    CHECK(resets == 0, "arp rev %d reso %.2f: filter safety net fired", rev ? 4 : 2, (double)resos[ri]);
+                    CHECK(w < 2.0, "arp rev %d reso %.2f %s release %s: note-start step %.2fx the tone's own", rev ? 4 : 2, (double)resos[ri], i & 1 ? "mono" : "poly", i & 2 ? "long" : "short", w);
+                }
+        printf("    24 arpeggio runs (Rev 2 and Rev 4, three resonances, poly / mono, short / long release): worst note-start step %.2fx the tone's own\n", worst);
+    }
+}
+
+/* ---- declick: rounded envelope corners ------------------------------------------------------------------------------ */
+
+/* a self-oscillating, noisy pluck (resonance 1.0, filter envelope sweep, attack 0) played as 22 repeated notes; counts the places where the third difference of the
+ * output jumps to more than 12x its own running level (and above -74 dBFS): the signature of a tick, not of a smooth tone */
+static int tick_events(float declick)
+{
+    static float y[5512 * 22];
+    int n = 0, s, i, found = 0;
+    double level = 1e-9;
+    fresh(&E, 0);
+    tp5_set_param(&E, P_VOLUME, 0.8f);
+    tp5_set_param(&E, P_A_VOL, 0.33f); tp5_set_param(&E, P_A_SEMI, 12.f); tp5_set_param(&E, P_NOISE, 0.45f);
+    tp5_set_param(&E, P_CUTOFF, 0.35f); tp5_set_param(&E, P_RESO, 1.f); tp5_set_param(&E, P_ENVAMT, 0.27f);
+    tp5_set_param(&E, P_F_ATK, 0.f); tp5_set_param(&E, P_F_DEC, 0.09f); tp5_set_param(&E, P_F_SUS, 0.47f); tp5_set_param(&E, P_F_REL, 0.4f);
+    tp5_set_param(&E, P_A_ATK, 0.f); tp5_set_param(&E, P_A_DEC, 0.23f); tp5_set_param(&E, P_A_SUS, 1.f); tp5_set_param(&E, P_A_REL, 0.72f);
+    E.p[P_DECLICK] = declick;
+    for (s = 0; s < 22; s++) {
+        int done = 0;
+        tp5_note_on(&E, 60, 100);
+        while (done < 5512) {
+            const int m = 5512 - done > 128 ? 128 : 5512 - done;
+            float l[BLOCK], r[BLOCK];
+            if (done <= 3858 && done + m > 3858) tp5_note_off(&E, 60);
+            tp5_render(&E, l, r, m);
+            memcpy(y + n, l, (size_t)m * sizeof(float));
+            n += m; done += m;
+        }
+    }
+    for (i = 4; i < n - 1; i++) {
+        const double d3 = fabs((double)y[i + 1] - 3.0 * y[i] + 3.0 * y[i - 1] - y[i - 2]);
+        if (d3 > 12.0 * level && d3 > 2e-4 && i > 2 * 5512) { found++; i += 8; }
+        level += (d3 - level) * 0.002;
+    }
+    return found;
+}
+
+static void test_declick(void)
+{
+    int off, on, i, finite = 1;
+    printf("[declick: envelope corners]\n");
+    CHECK(strcmp(tp5_params[P_DECLICK].key, "declick") == 0 && tp5_is_sound_param(P_DECLICK) && tp5_params[P_DECLICK].def == 0.f, "declick is an internal sound parameter, off by default");
+    tp5_init(&E, SR);
+    for (i = 0; i < TINYPRO5_PRESET_COUNT; i++) { tp5_load_preset(&E, i); if (E.p[P_DECLICK] != 0.f) break; }
+    CHECK(i == TINYPRO5_PRESET_COUNT, "factory programs load with declick off (the audited reference stays as it was)");
+
+    off = tick_events(0.f);
+    on = tick_events(1.f);
+    printf("    self-oscillating pluck, 22 repeated notes: tick events %d with declick off, %d with declick on\n", off, on);
+    CHECK(off >= 20, "the test patch really ticks without declick (%d events)", off);
+    CHECK(on * 10 <= off, "declick removes the ticks: %d -> %d", off, on);
+
+    {   /* the smoothing lags the envelope by a few ms and catches up; off, it is the envelope itself */
+        float lag = 0.f;
+        int n;
+        for (i = 0; i < 2; i++) {
+            fresh(&E, 0);
+            saw_patch(&E);
+            tp5_set_param(&E, P_A_ATK, 0.f);
+            E.p[P_DECLICK] = (float)i;
+            tp5_note_on(&E, 60, 100);
+            lag = 0.f;
+            for (n = 0; n < 300; n++) {
+                tp5_render(&E, BL, BR, 1);
+                if (E.voice[0].a_env - E.voice[0].amp_s > lag) lag = E.voice[0].a_env - E.voice[0].amp_s;
+            }
+            if (i == 0) CHECK(lag == 0.f, "declick off: the smoothed envelope is the envelope (lag %.4f)", (double)lag);
+            else CHECK(lag > 0.05f, "declick on: the smoothed envelope trails the attack (lag %.3f)", (double)lag);
+            run(&E, 8192, &finite, NULL);
+            CHECK(fabsf(E.voice[0].a_env - E.voice[0].amp_s) < 1e-4f, "...and catches up (%.6f)", (double)fabsf(E.voice[0].a_env - E.voice[0].amp_s));
+        }
+    }
+    {   /* programs of an imported bank load with declick on, unless the program says otherwise */
+        const tp5_kv zero[1] = { { P_DECLICK, 0.f } }, cut[1] = { { P_CUTOFF, 0.4f } };
+        tp5_banks_reset();
+        CHECK(tp5_bank_begin("Imported") == 1, "bank");
+        tp5_bank_add(1, "plain", cut, 1);
+        tp5_bank_add(1, "says off", zero, 1);
+        tp5_bank_end(1);
+        tp5_init(&E, SR);
+        tp5_set_param(&E, P_BANK, 1.f);
+        tp5_load_preset(&E, 0);
+        CHECK(E.p[P_DECLICK] == 1.f, "an imported program loads declicked");
+        tp5_load_preset(&E, 1);
+        CHECK(E.p[P_DECLICK] == 0.f, "...unless it lists declick 0");
+        tp5_set_param(&E, P_BANK, 0.f);
+        CHECK(E.p[P_DECLICK] == 0.f, "back in the factory bank: off");
+        tp5_banks_reset();
+    }
+}
+
 static void test_headroom(void)
 {
     int c, r, finite = 1, pid, i;
@@ -623,7 +915,7 @@ static void test_host_surface(void)
     api->get_param(a, "chain_params", chain, sizeof chain);
     CHECK(json_has(chain, "\"step\":0.01"), "runtime chain_params keeps the float step");
     for (i = 0; i < P_COUNT; i++) {
-        const int internal = i == P_VEL_FILT || i == P_VEL_AMP;
+        const int internal = i == P_VEL_FILT || i == P_VEL_AMP || i == P_DECLICK;
         char key[64];
         snprintf(key, sizeof key, "\"key\":\"%s\"", tp5_params[i].key);
         CHECK(internal ? !json_has(big, key) : json_has(big, key), "module.json %s %s", internal ? "leaves out" : "lists", tp5_params[i].key);
@@ -657,6 +949,8 @@ int main(void)
     test_velocity_aftertouch();
     test_vintage();
     test_switching();
+    test_retrigger();
+    test_declick();
     test_headroom();
     test_host_surface();
     printf("\n%d checks, %d failed\n", g_checks, g_fail);
