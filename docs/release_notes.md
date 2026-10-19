@@ -1,5 +1,17 @@
 # TinyPro5 release notes
 
+## 1.1.1
+
+Click fixes for repeated and arpeggiated notes.
+
+* **Declick** (new, internal): the amp and filter envelopes get their corners rounded over about 1.5 ms, which removes the ticks that fast attacks and the attack -> decay
+  corner cause on a resonant or self-oscillating filter (a self-oscillating pluck that ticked on every repeated note now measures clean). It is on for
+  every program from an imported bank and off in the factory bank, so the 32 factory programs sound exactly as before. Imported presets with very fast envelopes lose a little snap.
+* **Rev 4 attack:** the attack ramp is never shorter than 3 ms (a 0.6 ms ramp clicked on every repeat of a low bass note; the click is about 11 dB smaller).
+  Rev 4 decay and release are never faster than Rev 2's fastest setting.
+* **Retriggering a sounding voice** eases the note's velocity over about 2 ms instead of stepping the level.
+* The self-oscillation key-down click is no longer made bigger by Rev 4's input gain.
+
 ## 1.1.0
 
 * New **Rev** switch (More 2 page): Rev 2 is the engine as it was (the 32 factory programs sound exactly as before); Rev 4 gives the filter less bass drop under resonance
