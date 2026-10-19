@@ -24,12 +24,12 @@ const char *tp5_page_names[TP5_PAGES] = { "Filter", "Osc", "Amp+Mix", "Voice+Sys
 #define TP5_EXTRA_PAGES 2
 static const int8_t k_extra_pages[TP5_EXTRA_PAGES][TP5_KNOBS] = {
     { P_PM_DEST, P_LFO_RATE, P_LFO_WAVE, P_LFO_DEST, P_GLIDE, P_DRIFT, P_A_SEMI, P_B_FINE },
-    { P_NOISE_COL, P_B_LFO, P_B_KBD, P_MODWHEEL, -1, -1, -1, -1 },
+    { P_NOISE_COL, P_B_LFO, P_B_KBD, P_MODWHEEL, P_REV, P_VINTAGE, -1, -1 },   /* P_VEL_FILT / P_VEL_AMP stay off every page: programs carry them */
 };
 static const char *k_extra_names[TP5_EXTRA_PAGES] = { "More 1", "More 2" };
 
 /* bounded appender: tracks overflow instead of writing past the end */
-typedef struct { char *buf; int cap, len, bad, inline_meta; } jw;
+typedef struct { char *buf; int cap, len, bad, inline_meta, no_step; } jw;   /* no_step: leave out "step":0.01 (the host's default) to keep module.json small */
 
 static void jput(jw *w, const char *fmt, ...)
 {
@@ -76,6 +76,7 @@ static int enum_for(int id, enum_def *e)
     case P_LFO_WAVE: { static const char *o[] = { "Saw", "Triangle", "Square" }; for (i = 0; i < 3; i++) e->opts[i] = o[i]; e->n = 3; return 1; }
     case P_LFO_DEST: { static const char *o[] = { "Pitch", "PWM", "Filter", "Pitch+Flt", "PWM+Flt", "Pitch+PWM", "All", "Off" }; for (i = 0; i < 8; i++) e->opts[i] = o[i]; e->n = 8; return 1; }
     case P_SYNC: case P_B_LFO: case P_B_KBD: { static const char *o[] = { "Off", "On" }; e->opts[0] = o[0]; e->opts[1] = o[1]; e->n = 2; return 1; }
+    case P_REV: { static const char *o[] = { "Rev2", "Rev4" }; e->opts[0] = o[0]; e->opts[1] = o[1]; e->n = 2; return 1; }
     case P_SORT: { static const char *o[] = { "Bank order", "A-Z" }; e->opts[0] = o[0]; e->opts[1] = o[1]; e->n = 2; return 1; }
     case P_BANK: {
         const int n = tp5_bank_count();
@@ -108,16 +109,23 @@ static void put_meta(jw *w, int id)
     } else if (p->is_int) {
         jput(w, "\"type\":\"int\",\"min\":%d,\"max\":%d,\"default\":%d", (int)p->min, (int)p->max, (int)p->def);
     } else {
-        jput(w, "\"type\":\"float\",\"min\":%g,\"max\":%g,\"default\":%g,\"step\":0.01", (double)p->min, (double)p->max, (double)p->def);
+        jput(w, "\"type\":\"float\",\"min\":%g,\"max\":%g,\"default\":%g%s", (double)p->min, (double)p->max, (double)p->def, w->no_step ? "" : ",\"step\":0.01");
     }
 }
 
-static void put_chain_params(jw *w)
+/* Internal parameters have no control of their own on any page: programs carry them (REV_4 velocity depths). */
+static int is_internal(int id) { return id == P_VEL_FILT || id == P_VEL_AMP; }
+
+/* `skip_internal`: module.json is capped at 8 KB by the standalone loader, so it leaves the internal parameters out; the runtime
+ * chain_params answer (get_param) always lists every parameter. */
+static void put_chain_params(jw *w, int skip_internal)
 {
-    int i;
+    int i, first = 1;
     jput(w, "[");
     for (i = 0; i < P_COUNT; i++) {
-        if (i) jput(w, ",");
+        if (skip_internal && is_internal(i)) continue;
+        if (!first) jput(w, ",");
+        first = 0;
         jput(w, "{\"key\":\"%s\",\"name\":\"%s\",", tp5_params[i].key, tp5_params[i].label);
         put_meta(w, i);
         jput(w, "}");
@@ -127,16 +135,16 @@ static void put_chain_params(jw *w)
 
 int tp5_json_chain_params(char *buf, int cap)
 {
-    jw w = { buf, cap, 0, 0, 0 };
+    jw w = { buf, cap, 0, 0, 0, 0 };
     if (cap > 0) buf[0] = 0;
-    put_chain_params(&w);
+    put_chain_params(&w, 0);
     return jfinish(&w);
 }
 
 /* the runtime list behind the "Select Bank" level: [{"index":0,"label":"Factory (32)"}, ...] */
 int tp5_json_bank_list(char *buf, int cap)
 {
-    jw w = { buf, cap, 0, 0, 0 };
+    jw w = { buf, cap, 0, 0, 0, 0 };
     int i;
     if (cap > 0) buf[0] = 0;
     jput(&w, "[");
@@ -244,27 +252,28 @@ static void put_ui_hierarchy(jw *w)
 
 int tp5_json_ui_hierarchy(char *buf, int cap)
 {
-    jw w = { buf, cap, 0, 0, 1 };
+    jw w = { buf, cap, 0, 0, 1, 0 };
     if (cap > 0) buf[0] = 0;
     put_ui_hierarchy(&w);
     return jfinish(&w);
 }
 
+/* Compact on purpose: the standalone loader caps module.json at 8 KB. */
 int tp5_json_module(char *buf, int cap)
 {
-    jw w = { buf, cap, 0, 0, 0 };
+    jw w = { buf, cap, 0, 0, 0, 1 };
     if (cap > 0) buf[0] = 0;
-    jput(&w, "{\n  \"id\": \"tinypro5\",\n  \"name\": \"TinyPro5\",\n  \"abbrev\": \"TP5\",\n"
-             "  \"version\": \"1.0.5\",\n  \"api_version\": 2,\n  \"category\": \"instrument\",\n"
-             "  \"author\": \"TinyPro5\",\n"
-             "  \"description\": \"Prophet-5 Rev 2 style 5-voice virtual analog: SSM 2040 filter, Poly-Mod, "
-             "drift and 32 original factory programs\",\n"
-             "  \"dsp\": \"dsp.so\",\n  \"ui\": \"ui.js\",\n"
-             "  \"capabilities\": {\n    \"audio_out\": true,\n    \"midi_in\": true,\n    \"chainable\": true,\n"
-             "    \"component_type\": \"sound_generator\",\n    \"ui_hierarchy\": ");
+    jput(&w, "{\"id\":\"tinypro5\",\"name\":\"TinyPro5\",\"abbrev\":\"TP5\","
+             "\"version\":\"1.0.5\",\"api_version\":2,\"category\":\"instrument\","
+             "\"author\":\"TinyPro5\","
+             "\"description\":\"Prophet-5 style 5-voice virtual analog, Rev 2 / Rev 4: SSM 2040 or CEM 3320 filter, Poly-Mod, "
+             "drift and 32 original factory programs\","
+             "\"dsp\":\"dsp.so\",\"ui\":\"ui.js\","
+             "\"capabilities\":{\"audio_out\":true,\"midi_in\":true,\"chainable\":true,"
+             "\"component_type\":\"sound_generator\",\"ui_hierarchy\":");
     put_ui_hierarchy(&w);
-    jput(&w, ",\n    \"chain_params\": ");
-    put_chain_params(&w);
-    jput(&w, "\n  }\n}\n");
+    jput(&w, ",\"chain_params\":");
+    put_chain_params(&w, 1);
+    jput(&w, "}}");
     return jfinish(&w);
 }

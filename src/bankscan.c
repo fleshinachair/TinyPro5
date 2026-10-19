@@ -160,11 +160,12 @@ static void add_h2p(int bank, const char *path, const uint8_t *data, size_t len)
 static void add_syx(int bank, const uint8_t *data, size_t len)
 {
     size_t pos = 0;
-    uint8_t raw[133];
+    uint8_t raw[TP5_SYX_RAW_MAX];
+    int raw_len = 0;
     char name[24];
     tp5_kv kv[TP5_BANK_KV_PER_PRESET];
-    while (tp5_syx_next(data, len, &pos, raw, name)) {
-        const int n = tp5_p5_to_kv(raw, kv, TP5_BANK_KV_PER_PRESET);
+    while (tp5_syx_next_ex(data, len, &pos, raw, &raw_len, name)) {
+        const int n = tp5_p5_to_kv_ex(raw, raw_len, kv, TP5_BANK_KV_PER_PRESET);
         if (tp5_bank_add(bank, name, kv, n) == 0) g_added++; else g_skipped++;
     }
 }

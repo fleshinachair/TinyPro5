@@ -38,6 +38,20 @@ TP5H int tp5h_preset_kv(int i, int k, int *id, float *v)
 }
 TP5H void tp5h_load_preset(int i) { tp5_load_preset(&g_e, i); }
 
+/* banks: scan a folder of .zip / .syx / .h2p files (the same code the module runs at start-up), then load any program of any bank */
+TP5H int tp5h_scan(const char *dir) { return tp5_banks_scan(dir); }
+TP5H const char *tp5h_scan_report(void) { return tp5_banks_report(); }
+TP5H int tp5h_bank_count(void) { return tp5_bank_count(); }
+TP5H int tp5h_bank_size(int b) { return tp5_bank_size(b); }
+TP5H const char *tp5h_bank_name(int b) { return tp5_bank_name(b); }
+TP5H const char *tp5h_bank_program_name(int b, int slot) { return tp5_bank_preset_name(b, slot); }
+TP5H void tp5h_load_bank_program(int b, int slot)
+{
+    tp5_set_param(&g_e, P_BANK, (float)b);
+    tp5_load_preset(&g_e, slot);
+}
+
+TP5H void tp5h_aftertouch(int value) { tp5_aftertouch(&g_e, value); }
 TP5H void tp5h_note_on(int note, int vel) { tp5_note_on(&g_e, note, vel); }
 TP5H void tp5h_note_off(int note) { tp5_note_off(&g_e, note); }
 TP5H void tp5h_all_notes_off(void) { tp5_all_notes_off(&g_e); }

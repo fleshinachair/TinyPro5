@@ -1,5 +1,5 @@
 /*
- * TinyPro5 - Prophet-5 Rev 2 style virtual analog polysynth engine.
+ * TinyPro5 - Prophet-5 style virtual analog polysynth engine (Rev 2 voicing, or Rev 4 voicing with the rev switch).
  *
  * Pure C11, no dynamic allocation anywhere, no globals mutated by the audio path.
  * The engine is host-agnostic; src/plugin.c adapts it to the Schwung v2 plugin ABI.
@@ -42,6 +42,10 @@ typedef enum {
     P_LFO_RATE, P_LFO_WAVE, P_LFO_DEST, P_LFO_AMT, P_MODWHEEL,
     P_UNISON,               /* voice mode: 0 Poly, 1 Unison, 2 Mono, 3 Legato (key voice_mode, alias unison) */
     P_DETUNE,               /* unison spread */
+    P_REV,                  /* hardware revision voicing: REV_2 (SSM 2040 style filter, analog envelopes: the original engine) or REV_4 (CEM 3320 style filter, fast envelopes, velocity + aftertouch) */
+    P_VINTAGE,              /* 0..1 macro: extra voice-to-voice component drift, envelope variance and oscillator micro-detune (0 adds nothing) */
+    P_VEL_FILT,             /* REV_4: how much note velocity scales the filter envelope (internal: not on a front-panel page, programs carry it) */
+    P_VEL_AMP,              /* REV_4: how much note velocity scales the amp envelope (internal, as above) */
     P_VOICES,               /* voice count 1..5: polyphony in Poly, stack size in Unison; a performance setting, not owned by presets */
     P_BANK,                 /* active bank: 0 = the 32 factory programs, 1.. = custom banks found in banks/ (src/bank.h) */
     P_SORT,                 /* preset list order: 0 = bank order (1-1 ...), 1 = alphabetical */
@@ -60,6 +64,14 @@ typedef struct {
 
 extern const tp5_param_info tp5_params[P_COUNT];
 
+/* Values of P_REV. A program that does not list rev is REV_2 with vintage 0 and no velocity modulation: the engine as it was before the toggle. */
+enum { REV_2 = 0, REV_4 = 1 };
+/* Choosing a revision with tp5_set_param(P_REV) also sets that revision's default vintage (loading a program or restoring a state does not). */
+#define TP5_VINTAGE_REV2_DEF  0.65f
+#define TP5_VINTAGE_REV4_DEF  0.00f
+#define TP5_VEL_FILT_REV4_DEF 0.70f
+#define TP5_VEL_AMP_REV4_DEF  0.60f
+
 int  tp5_param_id_from_key(const char *key); /* -1 when unknown */
 int  tp5_is_sound_param(int id);
 
@@ -73,6 +85,9 @@ typedef struct { float s[4]; } tp5_ladder;
 void  tp5_ladder_reset(tp5_ladder *f);
 /* g = tan(pi*fc/fs), k = resonance feedback (self-oscillation at ~4). */
 float tp5_ladder_tick(tp5_ladder *f, float x, float g, float k);
+/* The same with the REV_4 voicing blended in by rev = 0..1. rev 0 is tp5_ladder_tick bit for bit; rev 1 gives back part of the passband that the
+ * resonance feedback takes away (less bass drop) and moves the saturation knee up (cleaner self-oscillation, less pitch pull). */
+float tp5_ladder_tick_rev(tp5_ladder *f, float x, float g, float k, float rev);
 
 /* ---- engine ---- */
 enum { ENV_IDLE = 0, ENV_ATK, ENV_DEC, ENV_SUS, ENV_REL };
@@ -94,12 +109,14 @@ typedef struct {
     uint32_t dr_count;
     float   uni_cents;          /* unison detune offset                  */
     float   gain_l, gain_r;
+    float   press, press_sm;    /* polyphonic key pressure on this voice's note, 0..1, and its per-sample smoothed value (acts in REV_4 only) */
 } tp5_voice;
 
 typedef struct { float atk, dec, sus, rel; } tp5_env_coefs;
 
 enum { SM_CUTOFF, SM_RESO, SM_ENVAMT, SM_A_WAVE, SM_B_WAVE, SM_B_SEMI, SM_A_PW, SM_B_PW,
-       SM_A_VOL, SM_B_VOL, SM_NOISE, SM_PM_FENV, SM_PM_OSCB, SM_LFO_AMT, SM_VOLUME, SM_A_SEMI, SM_COUNT };
+       SM_A_VOL, SM_B_VOL, SM_NOISE, SM_PM_FENV, SM_PM_OSCB, SM_LFO_AMT, SM_VOLUME, SM_A_SEMI,
+       SM_REV, SM_VINTAGE, SM_VEL_FILT, SM_VEL_AMP, SM_AFTERTOUCH, SM_COUNT };
 
 typedef struct {
     float sr;
@@ -109,6 +126,7 @@ typedef struct {
     tp5_env_coefs fcoef, acoef;
     uint32_t age;
     float   bend;               /* semitones                            */
+    float   aftertouch;         /* channel pressure 0..1 (acts in REV_4 only) */
     uint8_t pedal;
     uint8_t note_stack[16]; int stack_n; /* unison note priority (last)  */
     float   lfo_ph, lfo_out;
@@ -154,6 +172,8 @@ void  tp5_note_off(tp5_engine *e, int note);
 void  tp5_all_notes_off(tp5_engine *e);
 void  tp5_cc(tp5_engine *e, int cc, int val);
 void  tp5_pitch_bend(tp5_engine *e, int value14); /* 0..16383, 8192 = centre */
+void  tp5_aftertouch(tp5_engine *e, int value);   /* channel pressure 0..127: REV_4 sends it to LFO depth and cutoff, REV_2 ignores it */
+void  tp5_poly_pressure(tp5_engine *e, int note, int value);   /* polyphonic key pressure (MIDI 0xA0, what the Move pads send): the same, for the voices playing `note` */
 void  tp5_midi(tp5_engine *e, const uint8_t *msg, int len);
 
 int   tp5_active_voices(const tp5_engine *e);

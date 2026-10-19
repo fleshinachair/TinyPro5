@@ -37,6 +37,12 @@ case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) AU=build/test_audit.exe ;; esac
 "${CCMD[@]}" -std=c11 -Wall -Wextra -Werror -pedantic -O2 -o "$AU" tests/test_audit.c src/tinypro5.c src/presets_factory.c src/bank.c src/overlay.c src/h2p.c src/bankscan.c -lm
 "./$AU"
 
+echo "== Rev 2 / Rev 4 voicing (filter, envelopes, velocity, aftertouch, vintage, mid-note switching, headroom)"
+RV=build/test_rev
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) RV=build/test_rev.exe ;; esac
+"${CCMD[@]}" -std=c11 -Wall -Wextra -Werror -pedantic -O2 -o "$RV" tests/test_rev.c "${SRCS[@]}" -lm
+"./$RV"
+
 echo "== custom banks (zip / inflate / .h2p / .syx / registry / folder scan)"
 BK=build/test_banks
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) BK=build/test_banks.exe ;; esac
@@ -51,6 +57,8 @@ if [ "${SANITIZE:-0}" = "1" ]; then
   "./${EXE%.exe}_ubsan${EXE##*test_prophet5}"
   "${CCMD[@]}" -std=c11 -Wall -Wextra -Werror -pedantic -O1 -g -fsanitize=undefined -fno-sanitize-recover=undefined       -o build/test_banks_ubsan tests/test_banks.c src/tinypro5.c src/presets_factory.c src/bank.c src/overlay.c src/h2p.c src/bankscan.c src/meta.c -lm
   ./build/test_banks_ubsan
+  "${CCMD[@]}" -std=c11 -Wall -Wextra -Werror -pedantic -O1 -g -fsanitize=undefined -fno-sanitize-recover=undefined -o build/test_rev_ubsan tests/test_rev.c "${SRCS[@]}" -lm
+  ./build/test_rev_ubsan
   "${CCMD[@]}" -std=c11 -Wall -Wextra -Werror -pedantic -O1 -g -fsanitize=undefined -fno-sanitize-recover=undefined       -o build/test_audit_ubsan tests/test_audit.c src/tinypro5.c src/presets_factory.c src/bank.c src/overlay.c src/h2p.c src/bankscan.c -lm
   ./build/test_audit_ubsan
 fi

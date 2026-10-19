@@ -253,6 +253,196 @@ static void test_syx(void)
     }
 }
 
+/* kv lookup */
+static int kv_get(const tp5_kv *kv, int n, int id, float *v)
+{
+    int i;
+    for (i = 0; i < n; i++) if (kv[i].id == id) { *v = kv[i].v; return 1; }
+    return 0;
+}
+
+static int import_h2p(const char *text, tp5_kv *kv)
+{
+    tp5_h2p h;
+    if (!tp5_h2p_parse(text, strlen(text), &h)) return -1;
+    return tp5_h2p_to_kv(&h, kv, TP5_BANK_KV_PER_PRESET);
+}
+
+/* a program dump frame like make_frame, but carrying nraw (a multiple of 7) decoded bytes: nraw / 7 groups of 8 packed bytes */
+static size_t make_frame_wide(uint8_t *out, const uint8_t *raw, int nraw, int g, int p)
+{
+    size_t k, j, o = 0;
+    out[o++] = 0xF0; out[o++] = 0x01; out[o++] = 0x32; out[o++] = 0x02; out[o++] = (uint8_t)g; out[o++] = (uint8_t)p;
+    for (k = 0; k * 7 < (size_t)nraw; k++) {
+        uint8_t msb = 0;
+        for (j = 0; j < 7; j++) if (raw[k * 7 + j] & 0x80) msb |= (uint8_t)(1u << j);
+        out[o++] = msb;
+        for (j = 0; j < 7; j++) out[o++] = (uint8_t)(raw[k * 7 + j] & 0x7F);
+    }
+    out[o++] = 0xF7;
+    return o;
+}
+
+static void test_revision_import(void)
+{
+    static const char hdr[] = "#AM=Repro-5\n#cm=Filter\nCutoff=40\n";
+    tp5_kv kv[TP5_BANK_KV_PER_PRESET];
+    char t[512];
+    float v;
+    int n, chip;
+    printf("[Rev 2 / Rev 4 import: .h2p filter tweak, voice detune, velocity]\n");
+
+    /* Poly (3), Crispy (0), Driven (2): REV_4, Voice Detune 0..100 -> vintage 0..0.5, both velocity depths carried */
+    snprintf(t, sizeof t, "%s#cm=FltrIC\nChip=3\n#cm=VDetune\nAmount=80.00\n#cm=FEnv\nVelDep=68.00\n#cm=AEnv\nVelDep=30.00\n", hdr);
+    n = import_h2p(t, kv);
+    CHECK(n > 0 && kv_get(kv, n, P_REV, &v) && v == 1.f, "Poly -> REV_4");
+    CHECK(kv_get(kv, n, P_VINTAGE, &v) && fabsf(v - 0.40f) < 1e-5f, "Poly: detune 80 -> vintage 0.40 (0.5 x 0.8), got %.3f", (double)v);
+    CHECK(kv_get(kv, n, P_VEL_FILT, &v) && fabsf(v - 0.68f) < 1e-5f && kv_get(kv, n, P_VEL_AMP, &v) && fabsf(v - 0.30f) < 1e-5f, "Poly: velocity depths 68 / 30");
+    for (chip = 0; chip <= 3; chip++) {
+        static const char *name[4] = { "Crispy", "Rounded", "Driven", "Poly" };
+        static const int rev4[4] = { 1, 0, 1, 1 };
+        snprintf(t, sizeof t, "%s#cm=FltrIC\nChip=%d\n#cm=VDetune\nAmount=100.00\n#cm=FEnv\nVelDep=50\n#cm=AEnv\nVelDep=50\n", hdr, chip);
+        n = import_h2p(t, kv);
+        CHECK(n > 0 && (kv_get(kv, n, P_REV, &v) ? v == 1.f : 0) == rev4[chip], "%s -> %s", name[chip], rev4[chip] ? "REV_4" : "REV_2");
+        CHECK(kv_get(kv, n, P_VINTAGE, &v) && fabsf(v - (rev4[chip] ? 0.5f : 1.0f)) < 1e-5f, "%s: detune 100 -> vintage %.2f, got %.3f", name[chip], rev4[chip] ? 0.5 : 1.0, (double)v);
+        CHECK(rev4[chip] ? (kv_get(kv, n, P_VEL_FILT, &v) && kv_get(kv, n, P_VEL_AMP, &v)) : (!kv_get(kv, n, P_VEL_FILT, &v) && !kv_get(kv, n, P_VEL_AMP, &v)),
+              "%s: velocity depths %s", name[chip], rev4[chip] ? "carried" : "left out (REV_2 ignores them)");
+    }
+    /* REV_2 range: detune 0 -> 0.4, 50 -> 0.7 */
+    snprintf(t, sizeof t, "%s#cm=FltrIC\nChip=1\n#cm=VDetune\nAmount=0.00\n", hdr);
+    n = import_h2p(t, kv);
+    CHECK(kv_get(kv, n, P_VINTAGE, &v) && fabsf(v - 0.4f) < 1e-5f, "Rounded: detune 0 -> vintage 0.4, got %.3f", (double)v);
+    snprintf(t, sizeof t, "%s#cm=FltrIC\nChip=1\n#cm=VDetune\nAmount=50.00\n", hdr);
+    n = import_h2p(t, kv);
+    CHECK(kv_get(kv, n, P_VINTAGE, &v) && fabsf(v - 0.7f) < 1e-5f, "Rounded: detune 50 -> vintage 0.7, got %.3f", (double)v);
+    /* REV_4 detune 0 -> vintage 0 (nothing listed, the default) */
+    snprintf(t, sizeof t, "%s#cm=FltrIC\nChip=0\n#cm=VDetune\nAmount=0.00\n", hdr);
+    n = import_h2p(t, kv);
+    CHECK(!kv_get(kv, n, P_VINTAGE, &v) && kv_get(kv, n, P_REV, &v), "Crispy: detune 0 -> vintage 0 (default), REV_4 listed");
+    /* velocity depth over 100 and below 0 is clamped by the table */
+    snprintf(t, sizeof t, "%s#cm=FltrIC\nChip=0\n#cm=AEnv\nVelDep=250\n", hdr);
+    n = import_h2p(t, kv);
+    CHECK(kv_get(kv, n, P_VEL_AMP, &v) && v == 1.f, "velocity depth clamps to 1");
+
+    /* legacy and odd patches: no new key listed, so they load as REV_2, vintage 0, no velocity depth */
+    n = import_h2p(hdr, kv);
+    CHECK(n == 1 && !kv_get(kv, n, P_REV, &v) && !kv_get(kv, n, P_VINTAGE, &v) && !kv_get(kv, n, P_VEL_FILT, &v) && !kv_get(kv, n, P_VEL_AMP, &v), "a patch without the new keys lists none of them (n=%d)", n);
+    snprintf(t, sizeof t, "%s#cm=FEnv\nVelDep=59.00\n#cm=AEnv\nVelDep=56.50\n", hdr);
+    n = import_h2p(t, kv);
+    CHECK(!kv_get(kv, n, P_REV, &v) && !kv_get(kv, n, P_VEL_FILT, &v) && !kv_get(kv, n, P_VEL_AMP, &v), "velocity depths without a Rev 4 filter tweak are not carried");
+    snprintf(t, sizeof t, "%s#cm=FltrIC\nChip=9\n", hdr);
+    n = import_h2p(t, kv);
+    CHECK(!kv_get(kv, n, P_REV, &v), "an unknown tweak index is REV_2");
+    snprintf(t, sizeof t, "%s#cm=FltrIC\nChip=abc\n#cm=VDetune\nAmount=\n", hdr);
+    n = import_h2p(t, kv);
+    CHECK(n == 1, "unreadable tweak / detune values are ignored (n=%d)", n);
+
+    /* through the engine: the listed values are what the program loads */
+    tp5_banks_reset();
+    CHECK(tp5_bank_begin("Rev") == 1, "bank");
+    snprintf(t, sizeof t, "%s#cm=FltrIC\nChip=3\n#cm=VDetune\nAmount=40.00\n#cm=AEnv\nVelDep=80.00\n", hdr);
+    n = import_h2p(t, kv);
+    tp5_bank_add(1, "Poly one", kv, n);
+    n = import_h2p(hdr, kv);
+    tp5_bank_add(1, "Legacy one", kv, n);
+    snprintf(t, sizeof t, "%s#cm=FltrIC\nChip=1\n#cm=VDetune\nAmount=50.00\n", hdr);
+    n = import_h2p(t, kv);
+    tp5_bank_add(1, "Rounded one", kv, n);
+    tp5_bank_end(1);
+    load(1, 0);
+    CHECK((int)eff(&E, P_REV) == REV_4 && fabsf(eff(&E, P_VINTAGE) - 0.2f) < 1e-5f && fabsf(eff(&E, P_VEL_AMP) - 0.8f) < 1e-5f && eff(&E, P_VEL_FILT) == 0.f, "Poly program loads as REV_4, vintage 0.2, velocity 0 / 0.8");
+    CHECK(render_ok(), "Rev 4 program renders");
+    load(1, 1);
+    CHECK((int)eff(&E, P_REV) == REV_2 && eff(&E, P_VINTAGE) == 0.f && eff(&E, P_VEL_AMP) == 0.f, "legacy program loads as REV_2, vintage 0, no velocity depth");
+    load(1, 2);
+    CHECK((int)eff(&E, P_REV) == REV_2 && fabsf(eff(&E, P_VINTAGE) - 0.7f) < 1e-5f, "Rounded program loads as REV_2, vintage 0.7");
+    CHECK(render_ok(), "Rev 2 program with vintage renders");
+    tp5_banks_reset();
+}
+
+static void test_syx_revisions(void)
+{
+    uint8_t raw[TP5_SYX_RAW_MAX], back[TP5_SYX_RAW_MAX], frame[400], file[400 * 4];
+    char name[24];
+    tp5_kv kv[TP5_BANK_KV_PER_PRESET];
+    size_t pos, fl, o = 0;
+    int n, rl, i;
+    float v;
+    printf("[Rev 4 .syx: header, extended payload, legacy fallbacks]\n");
+
+    /* standard 133-byte program, Curtis (CEM 3320) filter switch set / clear */
+    memset(raw, 0, sizeof raw);
+    fill_raw(3, raw);
+    memcpy(raw + 65, "CURTIS PATCH        ", 20);
+    raw[20] = 1;
+    fl = make_frame(frame, raw, 0, 3);
+    pos = 0;
+    CHECK(tp5_syx_next_ex(frame, fl, &pos, back, &rl, name) && rl == 133 && memcmp(back, raw, 133) == 0 && pos == fl, "standard dump: 133 bytes (got %d)", rl);
+    n = tp5_p5_to_kv_ex(back, rl, kv, TP5_BANK_KV_PER_PRESET);
+    CHECK(kv_get(kv, n, P_REV, &v) && v == 1.f && kv_get(kv, n, P_VEL_FILT, &v) && fabsf(v - TP5_VEL_FILT_REV4_DEF) < 1e-6f &&
+          kv_get(kv, n, P_VEL_AMP, &v) && fabsf(v - TP5_VEL_AMP_REV4_DEF) < 1e-6f, "Curtis filter -> REV_4 with the Rev 4 velocity defaults");
+    CHECK(!kv_get(kv, n, P_VINTAGE, &v), "no vintage listed (the drift mapping from the Vintage byte is unchanged)");
+    raw[20] = 0;
+    n = tp5_p5_to_kv(raw, kv, TP5_BANK_KV_PER_PRESET);
+    CHECK(!kv_get(kv, n, P_REV, &v) && !kv_get(kv, n, P_VEL_FILT, &v) && !kv_get(kv, n, P_VINTAGE, &v), "SSM filter switch -> nothing listed (REV_2, vintage 0, velocity 0)");
+    raw[20] = 2;
+    n = tp5_p5_to_kv(raw, kv, TP5_BANK_KV_PER_PRESET);
+    CHECK(!kv_get(kv, n, P_REV, &v), "any filter switch value other than 1 stays REV_2");
+
+    /* an extended dump: 20 groups (140 decoded bytes, 160 packed) with the switch clear -> REV_4 because of the format alone */
+    memset(raw, 0, sizeof raw);
+    fill_raw(9, raw);
+    raw[20] = 0;
+    memcpy(raw + 65, "WIDE PATCH          ", 20);
+    for (i = 133; i < 140; i++) raw[i] = (uint8_t)(0x55 + i);                 /* undocumented extra bytes */
+    fl = make_frame_wide(frame, raw, 140, 1, 2);
+    CHECK(fl == 6 + 160 + 1, "extended frame is %zu bytes", fl);
+    pos = 0;
+    memset(back, 0xEE, sizeof back);
+    CHECK(tp5_syx_next_ex(frame, fl, &pos, back, &rl, name) && rl == 140 && memcmp(back, raw, 140) == 0 && pos == fl, "extended dump decodes all %d bytes", rl);
+    CHECK(strcmp(name, "Wide Patch") == 0, "name still read from the same place ('%s')", name);
+    n = tp5_p5_to_kv_ex(back, rl, kv, TP5_BANK_KV_PER_PRESET);
+    CHECK(kv_get(kv, n, P_REV, &v) && v == 1.f && n > 10, "extended dump -> REV_4 (n=%d)", n);
+    {   /* the plain reader still returns the standard 133 bytes of it */
+        uint8_t std[133];
+        pos = 0;
+        CHECK(tp5_syx_next(frame, fl, &pos, std, name) == 1 && memcmp(std, raw, 133) == 0, "tp5_syx_next accepts an extended dump and returns its first 133 bytes");
+    }
+    /* a dump that is too short (141 or 151 packed bytes) or absurdly long is not one of ours */
+    for (i = 0; i < 3; i++) {
+        static const int packed[3] = { 144, 151, 304 };
+        size_t k, q = 0;
+        frame[q++] = 0xF0; frame[q++] = 0x01; frame[q++] = 0x32; frame[q++] = 0x02; frame[q++] = 0; frame[q++] = 0;
+        for (k = 0; k < (size_t)packed[i]; k++) frame[q++] = (uint8_t)(k % 8 == 0 ? 0 : 0x20);
+        frame[q++] = 0xF7;
+        pos = 0;
+        CHECK(tp5_syx_next_ex(frame, q, &pos, back, &rl, name) == 0, "%d packed bytes is skipped", packed[i]);
+    }
+    /* a bank file mixing all of it: standard, Curtis, extended, junk between frames, damaged frame; scanned from disk */
+    memset(raw, 0, sizeof raw);
+    fill_raw(20, raw); raw[20] = 0; memcpy(raw + 65, "ONE                 ", 20);
+    o += make_frame(file + o, raw, 0, 0);
+    raw[20] = 1; memcpy(raw + 65, "TWO                 ", 20);
+    o += make_frame(file + o, raw, 0, 1);
+    raw[20] = 0; memcpy(raw + 65, "THREE               ", 20);
+    for (i = 133; i < 140; i++) raw[i] = 0x11;
+    o += make_frame_wide(file + o, raw, 140, 0, 2);
+    file[o++] = 0xF0; file[o++] = 0x01; file[o++] = 0x32; file[o++] = 0x02; file[o++] = 0; file[o++] = 3; file[o++] = 0x10; file[o++] = 0xF7;   /* truncated program */
+    MKDIR("build"); MKDIR("build/banks_rev");
+    put_text("build/banks_rev/Mixed.syx", file, o);
+    n = tp5_banks_scan("build/banks_rev");
+    printf("    %s\n", tp5_banks_report());
+    CHECK(n == 1 && tp5_bank_size(1) == 3 && strcmp(tp5_bank_preset_name(1, 2), "Three") == 0, "scan finds 3 programs, skips the truncated one (%d banks, %d programs)", n, tp5_bank_size(1));
+    load(1, 0); CHECK((int)eff(&E, P_REV) == REV_2 && eff(&E, P_VINTAGE) == 0.f && eff(&E, P_VEL_AMP) == 0.f, "standard program: REV_2, vintage 0, velocity 0");
+    CHECK(render_ok(), "standard program renders");
+    load(1, 1); CHECK((int)eff(&E, P_REV) == REV_4 && eff(&E, P_VEL_AMP) > 0.f, "Curtis program: REV_4");
+    CHECK(render_ok(), "Curtis program renders");
+    load(1, 2); CHECK((int)eff(&E, P_REV) == REV_4, "extended program: REV_4");
+    CHECK(render_ok(), "extended program renders");
+    remove("build/banks_rev/Mixed.syx");
+    tp5_banks_reset();
+}
+
 static void test_registry_engine(void)
 {
     tp5_kv a[2] = { { P_CUTOFF, 0.5f }, { P_RESO, 0.4f } };
@@ -529,6 +719,8 @@ int main(void)
     test_inflate_zip();
     test_h2p();
     test_syx();
+    test_revision_import();
+    test_syx_revisions();
     test_registry_engine();
     test_scan();
     test_overlay();

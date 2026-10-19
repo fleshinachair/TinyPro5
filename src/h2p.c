@@ -296,6 +296,8 @@ static const struct { const char *sec, *key; int idx; } k_h2p_map[] = {
     { "Filter", "Cutoff", H_FLT_CUT }, { "Filter", "Reso", H_FLT_RES }, { "Filter", "KeyAmt", H_FLT_KEY },
     { "Filter", "EnvAmt", H_FLT_ENV }, { "Filter", "VMod", H_FLT_VMOD }, { "Filter", "EnvPol", H_FLT_POL },
     { "Glide", "Amt", H_GLIDE },
+    { "FEnv", "VelDep", H_FENV_VEL }, { "AEnv", "VelDep", H_AENV_VEL },
+    { "FltrIC", "Chip", H_FLT_CHIP }, { "VDetune", "Amount", H_VDETUNE },
 };
 
 /* Locale-independent number reader: [+-]digits[.digits][e[+-]digits]; 0 when the text is not a number */
@@ -388,6 +390,17 @@ static void emit(tp5_kv *out, int *n, int cap, int id, float v)
 
 #define HV(i, d) (h->has[i] ? h->v[i] : (d))
 
+/* Repro-5 "Filter Tweak" chips, in the manual's order: 0 Crispy, 1 Rounded, 2 Driven, 3 Poly. Crispy / Driven / Poly are the CEM 3320
+ * flavoured voicings (REV_4); Rounded is the lower, rounder one (REV_2). The numbering is inferred from that order and from the factory
+ * defaults (Repro-5 ships with Poly = 3, Repro-1 with Crispy = 0), it is not written in the patch file. */
+int tp5_h2p_filter_rev4(const tp5_h2p *h)
+{
+    int chip;
+    if (!h->has[H_FLT_CHIP]) return 0;
+    chip = (int)(h->v[H_FLT_CHIP] + 0.5f);
+    return chip == 0 || chip == 2 || chip == 3;
+}
+
 /* Repro-5 plays  note + 12 (oct - 1) + semitone + fine / 100 - 1.994 semitones. A fixed-pitch Osc B
  * (keyboard off) sits at MIDI 72.04 for octave 2, semitone 0. */
 #define REPRO_PITCH_OFFSET (-1.994f)
@@ -455,6 +468,19 @@ int tp5_h2p_to_kv(const tp5_h2p *h, tp5_kv *out, int cap)
     }
     if (h->has[H_MIX_NOISE]) emit(out, &n, cap, P_NOISE, h->v[H_MIX_NOISE] / 100.f);
 
+    /* Revision voicing: the filter tweak picks it, Voice Detune becomes Vintage (REV_4 0 .. 0.5, REV_2 0.4 .. 1), and in REV_4 the two
+     * envelope velocity depths carry over. Keys a patch lacks leave the legacy defaults (REV_2, vintage 0, no velocity depth). */
+    {
+        const int rev4 = tp5_h2p_filter_rev4(h);
+        if (rev4) emit(out, &n, cap, P_REV, 1.f);
+        if (h->has[H_VDETUNE]) {
+            const float d = clampv(h->v[H_VDETUNE] / 100.f, 0.f, 1.f);
+            emit(out, &n, cap, P_VINTAGE, rev4 ? 0.5f * d : 0.4f + 0.6f * d);
+        }
+        if (rev4 && h->has[H_FENV_VEL]) emit(out, &n, cap, P_VEL_FILT, h->v[H_FENV_VEL] / 100.f);
+        if (rev4 && h->has[H_AENV_VEL]) emit(out, &n, cap, P_VEL_AMP, h->v[H_AENV_VEL] / 100.f);
+    }
+
     /* Poly-Mod */
     if (h->has[H_VMOD_B]) emit(out, &n, cap, P_PM_OSCB, h->v[H_VMOD_B] / 100.f);
     if (h->has[H_VMOD_ENV]) emit(out, &n, cap, P_PM_FENV, h->v[H_VMOD_ENV] / 100.f);
@@ -506,7 +532,7 @@ static void name_roman(char *s)
     }
 }
 
-int tp5_syx_next(const uint8_t *d, size_t len, size_t *pos, uint8_t raw[133], char name[24])
+int tp5_syx_next_ex(const uint8_t *d, size_t len, size_t *pos, uint8_t raw[TP5_SYX_RAW_MAX], int *raw_len, char name[24])
 {
     size_t i = *pos;
     while (i < len) {
@@ -522,18 +548,22 @@ int tp5_syx_next(const uint8_t *d, size_t len, size_t *pos, uint8_t raw[133], ch
             const size_t flen = e - s + 1;
             const uint8_t *f = d + s;
             const uint8_t *pk;
-            size_t groups, k, j, size;
+            size_t groups, k, j, size, decoded;
             if (flen < 8 || f[1] != 0x01 || (f[2] != 0x31 && f[2] != 0x32) || (f[3] != 2 && f[3] != 3)) continue;
-            if (f[3] == 2) { pk = f + 6; size = flen - 7; if (size != 152) continue; }
-            else { pk = f + 4; size = flen - 5; if (size != 147) continue; }
-            memset(raw, 0, 133);
+            /* the standard payload is 152 packed bytes (program dump) or 147 (edit buffer); a longer one is an extended dump, a shorter one is not ours */
+            if (f[3] == 2) { pk = f + 6; size = flen - 7; if (size < 152 || size > 296) continue; }
+            else { pk = f + 4; size = flen - 5; if (size < 147 || size > 291) continue; }
+            memset(raw, 0, TP5_SYX_RAW_MAX);
             groups = (size + 7) / 8;
+            decoded = 0;
             for (k = 0; k < groups; k++)
                 for (j = 0; j < 7; j++) {
                     const size_t src = k * 8 + 1 + j, dst = k * 7 + j;
-                    if (src >= size || dst >= 133) continue;
+                    if (src >= size || dst >= TP5_SYX_RAW_MAX) continue;
                     raw[dst] = (uint8_t)(pk[src] | (((pk[k * 8] >> j) & 1u) << 7));
+                    if (dst + 1 > decoded) decoded = dst + 1;
                 }
+            if (raw_len) *raw_len = decoded > TP5_SYX_RAW ? (int)decoded : TP5_SYX_RAW;
             {   /* name: raw[65..84], printable ASCII, spaces collapsed; ALL CAPS becomes Title Case:
                  * capital after every non-letter, "'S" -> "'s", " W " -> " w/ ",
                  * Pwm -> PWM, "E Piano" -> "E.Piano", the words Ii / Iii -> II / III */
@@ -576,7 +606,21 @@ int tp5_syx_next(const uint8_t *d, size_t len, size_t *pos, uint8_t raw[133], ch
     return 0;
 }
 
+int tp5_syx_next(const uint8_t *d, size_t len, size_t *pos, uint8_t raw[133], char name[24])
+{
+    uint8_t wide[TP5_SYX_RAW_MAX];
+    int n = 0;
+    const int ok = tp5_syx_next_ex(d, len, pos, wide, &n, name);
+    if (ok) memcpy(raw, wide, TP5_SYX_RAW);
+    return ok;
+}
+
 int tp5_p5_to_kv(const uint8_t *r, tp5_kv *out, int cap)
+{
+    return tp5_p5_to_kv_ex(r, TP5_SYX_RAW, out, cap);
+}
+
+int tp5_p5_to_kv_ex(const uint8_t *r, int raw_len, tp5_kv *out, int cap)
 {
 #define G(i) ((float)(r[i] > 127 ? 127 : r[i]))
     static const uint8_t lfo_dest_enum[8] = { 7, 0, 1, 5, 2, 3, 4, 6 };       /* wheel bit mask -> LFODest enum */
@@ -661,6 +705,11 @@ int tp5_p5_to_kv(const uint8_t *r, tp5_kv *out, int cap)
     emit(out, &n, cap, P_DRIFT, v);
     emit(out, &n, cap, P_UNISON, r[X_UNISON] ? 1.f : 0.f);
     emit(out, &n, cap, P_DETUNE, (float)(r[X_UNISON_DETUNE] > 7 ? 7 : r[X_UNISON_DETUNE]) / 7.f);
+    if (curtis || raw_len > TP5_SYX_RAW) {   /* Curtis (CEM 3320) filter, or a dump that carries more than the standard patch: Rev 4 voicing */
+        emit(out, &n, cap, P_REV, 1.f);
+        emit(out, &n, cap, P_VEL_FILT, TP5_VEL_FILT_REV4_DEF);
+        emit(out, &n, cap, P_VEL_AMP, TP5_VEL_AMP_REV4_DEF);
+    }
     return n;
 #undef G
 }

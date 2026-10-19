@@ -20,7 +20,7 @@
 #define TP5_BANK_MAX_PRESETS  1024     /* per bank (the preset parameter goes 0..1023) */
 #define TP5_BANK_NAME_LEN     28
 #define TP5_BANK_POOL_PRESETS 6144     /* all custom banks together */
-#define TP5_BANK_KV_PER_PRESET 40
+#define TP5_BANK_KV_PER_PRESET 48
 
 /* ---- u-he .h2p ------------------------------------------------------------------------------------------------ */
 enum {
@@ -32,6 +32,9 @@ enum {
     H_MIX_A, H_MIX_B, H_MIX_NOISE,
     H_FLT_CUT, H_FLT_RES, H_FLT_KEY, H_FLT_ENV, H_FLT_VMOD, H_FLT_POL,
     H_GLIDE,
+    H_FENV_VEL, H_AENV_VEL,   /* [FEnv] / [AEnv] VelDep: how far velocity scales the filter / amp envelope, 0-100 */
+    H_FLT_CHIP,               /* [FltrIC] Chip: the "Filter Tweak" (Crispy, Rounded, Driven, Poly), see tp5_h2p_filter_rev4 */
+    H_VDETUNE,                /* [VDetune] Amount: Voice Detune, 0-100 (Repro-5 patches only) */
     H_COUNT
 };
 
@@ -48,13 +51,24 @@ int tp5_h2p_parse(const char *text, size_t len, tp5_h2p *out);
 /* Repro-5 dial values (0-100 displays) -> TinyPro5 parameters. Keys missing from the patch emit nothing, so the engine
  * default applies. Returns the number of tp5_kv written (never more than cap). */
 int tp5_h2p_to_kv(const tp5_h2p *h, tp5_kv *out, int cap);
+/* The revision voicing a patch's filter tweak asks for: 1 = REV_4 (the CEM 3320 flavoured Crispy, Driven and Poly), 0 = REV_2 (Rounded, or no
+ * tweak key at all). Index order follows the Repro-5 manual's list; Repro-5's own default tweak (3) is Poly, Repro-1's (0) is Crispy. */
+int tp5_h2p_filter_rev4(const tp5_h2p *h);
 
 /* ---- Prophet-5 .syx program dumps: decoded only from the user's own bank files, none ships with the module --- */
 /* Next program frame (F0 01 <31|32> 02|03 ...) at or after *pos: unpacks the 7-in-8 bytes to `raw` (133 bytes, zero padded) and
  * the 20-character name. Returns 1 for a program, 0 at the end of data; damaged / foreign frames are skipped. */
 int tp5_syx_next(const uint8_t *data, size_t len, size_t *pos, uint8_t raw[133], char name[24]);
-/* Dial positions -> engine parameters (Repro-5-calibrated laws). Returns the tp5_kv count. */
+/* Tolerant form: also accepts dumps longer than the 133-byte patch (a Rev 4 era firmware that appends fields). `raw` receives up to
+ * TP5_SYX_RAW_MAX bytes and *raw_len how many were decoded (133 for a standard dump, more for an extended one). Dumps shorter than the
+ * standard size are still skipped. The bytes past 133 have no documented layout here: they are carried, not interpreted. */
+#define TP5_SYX_RAW      133
+#define TP5_SYX_RAW_MAX  256
+int tp5_syx_next_ex(const uint8_t *data, size_t len, size_t *pos, uint8_t raw[TP5_SYX_RAW_MAX], int *raw_len, char name[24]);
+/* Dial positions -> engine parameters (Repro-5-calibrated laws). Returns the tp5_kv count. A program with the Curtis (CEM 3320) filter
+ * switch set, or an extended dump, comes out as REV_4; anything else lists no revision (REV_2, vintage 0, no velocity depth). */
 int tp5_p5_to_kv(const uint8_t *raw, tp5_kv *out, int cap);
+int tp5_p5_to_kv_ex(const uint8_t *raw, int raw_len, tp5_kv *out, int cap);
 
 /* ---- zip ------------------------------------------------------------------------------------------------------ */
 /* Raw DEFLATE (RFC 1951). Returns 0 on success; outlen receives the byte count. Fails cleanly on corrupt or oversized data. */
