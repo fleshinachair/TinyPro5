@@ -953,6 +953,46 @@ static void test_spread(void)
     }
 }
 
+/* ---- Mono / Legato / Unison: letting go of a note that is not the one sounding ------------------------------------------------------ */
+
+static void test_note_stack(void)
+{
+    int mode, finite = 1;
+    uint32_t age;
+    printf("[Mono / Legato / Unison key release order]\n");
+    for (mode = 1; mode <= 3; mode++) {
+        static const char *name[4] = { "", "Unison", "Mono", "Legato" };
+        fresh(&E, 0);
+        tp5_set_param(&E, P_UNISON, (float)mode);
+        tp5_set_param(&E, P_A_ATK, 0.f); tp5_set_param(&E, P_A_DEC, 0.4f); tp5_set_param(&E, P_A_SUS, 0.5f);
+        tp5_set_param(&E, P_F_ATK, 0.f); tp5_set_param(&E, P_F_DEC, 0.4f); tp5_set_param(&E, P_F_SUS, 0.5f);
+        tp5_note_on(&E, 60, 100);
+        tp5_note_on(&E, 64, 100);                 /* 64 is sounding, 60 is still held */
+        run(&E, 44100, &finite, NULL);
+        CHECK(E.voice[0].a_stage == ENV_SUS && E.voice[0].f_stage == ENV_SUS && E.voice[0].note == 64, "%s: settled in sustain on note 64", name[mode]);
+        age = E.voice[0].age;
+        tp5_note_off(&E, 60);                     /* let go of the first key while the second is held */
+        CHECK(E.voice[0].a_stage == ENV_SUS && E.voice[0].f_stage == ENV_SUS, "%s: releasing the first key does not retrigger the envelopes (stage %d / %d)", name[mode], E.voice[0].a_stage, E.voice[0].f_stage);
+        CHECK(E.voice[0].age == age && E.voice[0].note == 64 && E.voice[0].gate, "%s: the sounding note and its age are untouched", name[mode]);
+        tp5_note_off(&E, 64);
+        CHECK(E.voice[0].a_stage == ENV_REL, "%s: letting go of the last key releases", name[mode]);
+
+        /* three keys: let go of the middle one, then of the top one: back to the first, skipping the one already released */
+        fresh(&E, 0);
+        tp5_set_param(&E, P_UNISON, (float)mode);
+        tp5_set_param(&E, P_A_ATK, 0.f); tp5_set_param(&E, P_A_DEC, 0.4f); tp5_set_param(&E, P_A_SUS, 0.5f);
+        tp5_note_on(&E, 60, 100); tp5_note_on(&E, 64, 100); tp5_note_on(&E, 67, 100);
+        run(&E, 44100, &finite, NULL);
+        age = E.voice[0].age;
+        tp5_note_off(&E, 64);
+        CHECK(E.voice[0].age == age && E.voice[0].a_stage == ENV_SUS && E.voice[0].note == 67, "%s: the middle key let go: nothing happens", name[mode]);
+        tp5_note_off(&E, 67);
+        CHECK(E.voice[0].pitch_tgt == 60.f && E.voice[0].note == 60, "%s: the sounding key let go: back to the first (note %d)", name[mode], E.voice[0].note);
+        if (mode == 2) CHECK(E.voice[0].age != age && E.voice[0].a_stage == ENV_ATK, "Mono retriggers on returning to a held note (as before)");
+        else CHECK(E.voice[0].age == age, "%s glides back without retriggering", name[mode]);
+    }
+}
+
 static void test_headroom(void)
 {
     int c, r, finite = 1, pid, i;
@@ -1065,6 +1105,7 @@ int main(void)
     test_retrigger();
     test_declick();
     test_spread();
+    test_note_stack();
     test_headroom();
     test_host_surface();
     printf("\n%d checks, %d failed\n", g_checks, g_fail);

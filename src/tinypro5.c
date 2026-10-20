@@ -739,12 +739,14 @@ void tp5_note_off(tp5_engine *e, int note)
         const int mode = (int)e->p[P_UNISON];
         int j, n = 0;
         uint8_t tmp[16];
+        const int was_top = e->stack_n > 0 && e->note_stack[e->stack_n - 1] == note;   /* the note that is sounding (last-note priority) */
         for (j = 0; j < e->stack_n; j++)
             if (e->note_stack[j] != note) tmp[n++] = e->note_stack[j];
         if (n == e->stack_n) return; /* not held */
         memcpy(e->note_stack, tmp, (size_t)n);
         e->stack_n = n;
         if (n > 0) { /* back to the previous held note: Mono retriggers it, Unison and Legato glide to it */
+            if (!was_top) return;   /* a note that was not sounding was let go of: nothing to do (it used to retrigger the sounding note's envelopes) */
             if (mode == 2) {
                 voice_trigger(e, &e->voice[0], e->note_stack[n - 1], (int)(e->voice[0].vel * 127.f + 0.5f), 0.f);
             } else {
