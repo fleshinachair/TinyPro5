@@ -6,7 +6,7 @@ A Prophet-5 **Rev 2** style virtual analog polysynth for the Ableton Move (Schwu
 |---|---|
 | Module ID | `tinypro5` |
 | Type | `sound_generator` (instrument) |
-| Version | 1.2.0 |
+| Version | 1.2.1 |
 | Target | AArch64 Cortex-A72, glibc, 44.1 kHz / 128-frame blocks |
 | Polyphony | 5 voices, oldest-voice stealing, Unison mode with detune spread |
 

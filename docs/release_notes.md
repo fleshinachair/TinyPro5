@@ -1,5 +1,10 @@
 # TinyPro5 release notes
 
+## 1.2.1
+
+* **Mono mode:** holding one key, pressing a second, and then letting go of the first no longer retriggers the amp and filter envelopes of the note that is sounding.
+  Only letting go of the sounding key moves anywhere (Mono still retriggers when it returns to a key that is still held). Legato and Unison are unaffected in sound.
+
 ## 1.2.0
 
 * **Stereo spread:** the five voices have always been panned at fixed positions (voice 1 left, voice 2 right, and so on), which is why successive Poly notes moved left and

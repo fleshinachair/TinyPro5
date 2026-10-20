@@ -264,7 +264,7 @@ int tp5_json_module(char *buf, int cap)
     jw w = { buf, cap, 0, 0, 0, 1 };
     if (cap > 0) buf[0] = 0;
     jput(&w, "{\"id\":\"tinypro5\",\"name\":\"TinyPro5\",\"abbrev\":\"TP5\","
-             "\"version\":\"1.2.0\",\"api_version\":2,\"category\":\"instrument\","
+             "\"version\":\"1.2.1\",\"api_version\":2,\"category\":\"instrument\","
              "\"author\":\"TinyPro5\","
              "\"description\":\"Prophet-5 style 5-voice virtual analog, Rev 2 / Rev 4: SSM 2040 or CEM 3320 filter, Poly-Mod, "
              "drift and 32 original factory programs\","
