@@ -73,6 +73,7 @@ const tp5_param_info tp5_params[P_COUNT] = {
     [P_VEL_AMP]   = { "vel_amp",     "VelAmp",  0.f,   1.f,   0.00f, 0 },
     [P_DECLICK]   = { "declick",     "Declick", 0.f,   1.f,   0.00f, 0 },
     [P_VOICES]    = { "voice_count", "Voices",  1.f,   5.f,   5.00f, 1 },
+    [P_SPREAD]    = { "pan_spread",  "Spread",  0.f,   1.f,   1.00f, 0 },
     [P_BANK]      = { "bank",        "Bank",    0.f,   (float)(TP5_MAX_BANKS - 1), 0.f, 1 },
     [P_SORT]      = { "preset_sort", "Order",   0.f,   1.f,   0.00f, 1 },
     [P_PRESET]    = { "preset",      "Preset",  0.f,   (float)(TINYPRO5_PRESET_MAX - 1), 0.f, 1 },
@@ -389,6 +390,7 @@ static void smooth_targets(const tp5_engine *e, float *t)
     t[SM_VEL_FILT] = p[P_VEL_FILT];
     t[SM_VEL_AMP] = p[P_VEL_AMP];
     t[SM_AFTERTOUCH] = rev4 ? e->aftertouch : 0.f;
+    t[SM_SPREAD] = (int)p[P_UNISON] >= 2 ? 0.f : p[P_SPREAD];   /* a single voice (Mono, Legato) sits in the middle; the fixed pans would push it left */
 }
 
 void tp5_init(tp5_engine *e, float sr)
@@ -422,8 +424,6 @@ void tp5_init(tp5_engine *e, float sr)
         v->rng = 0x9E3779B9u * (uint32_t)(i + 1) + 0x7F4A7C15u;
         v->ph_a = 0.5f * (rnd_bipolar(&v->rng) + 1.f);
         v->ph_b = 0.5f * (rnd_bipolar(&v->rng) + 1.f);
-        v->gain_l = 1.f - 0.5f * k_voice_pan[i];
-        v->gain_r = 1.f + 0.5f * k_voice_pan[i];
         v->dr_count = (uint32_t)i * 3u; /* stagger drift updates across voices */
         tp5_ladder_reset(&v->filt);
     }
@@ -783,15 +783,30 @@ void tp5_pitch_bend(tp5_engine *e, int value14)
     e->bend = ((float)(value14 - 8192) / 8192.f) * 2.f;
 }
 
+/* Pad response: pressure 12 and below is ignored (a resting finger), 112 and above is full scale (no need to lean on the pad), and in between the response is
+ * squared so a light touch is a gentle swell: MIDI 64 is 0.27 of the full modulation, 90 is 0.61. One curve for channel (0xD0) and polyphonic (0xA0) pressure;
+ * it feeds both the cutoff (+3 octaves at 1) and the LFO depth (+0.6 at 1). */
+#define TP5_AT_FLOOR 12
+#define TP5_AT_CEIL  112
+
+static float pressure_curve(int value)
+{
+    float n;
+    if (value <= TP5_AT_FLOOR) return 0.f;
+    if (value >= TP5_AT_CEIL) return 1.f;
+    n = (float)(value - TP5_AT_FLOOR) * (1.f / (float)(TP5_AT_CEIL - TP5_AT_FLOOR));
+    return n * n;
+}
+
 void tp5_aftertouch(tp5_engine *e, int value)
 {
-    e->aftertouch = clampf((float)value, 0.f, 127.f) * (1.f / 127.f);
+    e->aftertouch = pressure_curve(value);
 }
 
 void tp5_poly_pressure(tp5_engine *e, int note, int value)
 {
     int i;
-    const float p = clampf((float)value, 0.f, 127.f) * (1.f / 127.f);
+    const float p = pressure_curve(value);
     for (i = 0; i < TINYPRO5_VOICES; i++) {
         tp5_voice *v = &e->voice[i];
         if (v->a_stage != ENV_IDLE && (v->gate || v->sustained) && v->note == note) v->press = p;
@@ -1022,8 +1037,11 @@ static inline void voice_tick(tp5_engine *e, tp5_voice *v, int vi, const blockct
         const float vr4 = 1.f - sm[SM_VEL_AMP] * (1.f - v->vel_sm);
         y *= amp * (vleg + rs * (vr4 - vleg)) * c->uni_gain;
     }
-    *out_l += y * v->gain_l;
-    *out_r += y * v->gain_r;
+    {
+        const float pan = k_voice_pan[vi] * sm[SM_SPREAD];
+        *out_l += y * (1.f - 0.5f * pan);
+        *out_r += y * (1.f + 0.5f * pan);
+    }
 }
 
 /* ------------------------------------------------------------------------- */

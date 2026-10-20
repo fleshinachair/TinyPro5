@@ -49,6 +49,7 @@ typedef enum {
     P_DECLICK,              /* 0..1: rounds the corners of the amp and filter envelopes (a one-pole of up to 1.5 ms) so fast attacks and the attack -> decay corner do not tick on a
                              * resonant filter; 0 = off (the factory bank), programs of every other bank load with 1 (internal, as above) */
     P_VOICES,               /* voice count 1..5: polyphony in Poly, stack size in Unison; a performance setting, not owned by presets */
+    P_SPREAD,               /* stereo spread of the voices 0..1 (1 = the fixed per-voice pan the engine always had); Mono and Legato are always centred; a performance setting */
     P_BANK,                 /* active bank: 0 = the 32 factory programs, 1.. = custom banks found in banks/ (src/bank.h) */
     P_SORT,                 /* preset list order: 0 = bank order (1-1 ...), 1 = alphabetical */
     P_PRESET,               /* position in the active bank's list, in the order P_SORT selects (bank order: the slot itself) */
@@ -111,7 +112,6 @@ typedef struct {
     float   dr[3];              /* drift outputs (unit variance)         */
     uint32_t dr_count;
     float   uni_cents;          /* unison detune offset                  */
-    float   gain_l, gain_r;
     float   press, press_sm;    /* polyphonic key pressure on this voice's note, 0..1, and its per-sample smoothed value (acts in REV_4 only) */
 } tp5_voice;
 
@@ -119,7 +119,7 @@ typedef struct { float atk, dec, sus, rel; } tp5_env_coefs;
 
 enum { SM_CUTOFF, SM_RESO, SM_ENVAMT, SM_A_WAVE, SM_B_WAVE, SM_B_SEMI, SM_A_PW, SM_B_PW,
        SM_A_VOL, SM_B_VOL, SM_NOISE, SM_PM_FENV, SM_PM_OSCB, SM_LFO_AMT, SM_VOLUME, SM_A_SEMI,
-       SM_REV, SM_VINTAGE, SM_VEL_FILT, SM_VEL_AMP, SM_AFTERTOUCH, SM_COUNT };
+       SM_REV, SM_VINTAGE, SM_VEL_FILT, SM_VEL_AMP, SM_AFTERTOUCH, SM_SPREAD, SM_COUNT };
 
 typedef struct {
     float sr;

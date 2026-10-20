@@ -365,6 +365,42 @@ static void test_velocity_aftertouch(void)
         run(&E, 8192, &finite, NULL);
         CHECK(fabsf(E.sm[SM_LFO_AMT] - 0.1f) < 1e-4f, "Rev 2: poly pressure leaves the LFO alone");
     }
+    {   /* the pad response curve: a floor at 12, full scale at 112, squared in between (channel and polyphonic pressure alike) */
+        static const struct { int v; float want; } pts[] = {
+            { 0, 0.f }, { 11, 0.f }, { 12, 0.f }, { 13, 0.0001f }, { 32, 0.04f }, { 64, 0.2704f }, { 90, 0.6084f }, { 111, 0.9801f }, { 112, 1.f }, { 127, 1.f }, { 1000, 1.f }, { -5, 0.f } };
+        int k, finite = 1;
+        float prev = -1.f;
+        printf("    pressure -> fraction of full modulation (x3 octaves of cutoff, x0.6 LFO depth):");
+        for (k = 0; k < (int)(sizeof pts / sizeof *pts); k++) {
+            fresh(&E, 1);
+            tp5_aftertouch(&E, pts[k].v);
+            printf(" %d:%.3f", pts[k].v, (double)E.aftertouch);
+            CHECK(fabsf(E.aftertouch - pts[k].want) < 0.0006f, "channel pressure %d -> %.4f, want %.4f", pts[k].v, (double)E.aftertouch, (double)pts[k].want);
+            fresh(&E, 1);
+            tp5_note_on(&E, 48, 100);
+            tp5_poly_pressure(&E, 48, pts[k].v);
+            CHECK(fabsf(E.voice[0].press - pts[k].want) < 0.0006f, "poly pressure %d -> %.4f, want %.4f", pts[k].v, (double)E.voice[0].press, (double)pts[k].want);
+        }
+        printf("\n");
+        for (k = 0; k <= 127; k++) {          /* monotonic, never above 1, zero up to the floor */
+            fresh(&E, 1);
+            tp5_aftertouch(&E, k);
+            CHECK(E.aftertouch >= prev && E.aftertouch <= 1.f && (k > 12 || E.aftertouch == 0.f), "curve at %d: %.4f after %.4f", k, (double)E.aftertouch, (double)prev);
+            prev = E.aftertouch;
+        }
+        fresh(&E, 1);
+        saw_patch(&E);
+        tp5_note_on(&E, 48, 100);
+        tp5_aftertouch(&E, 64);
+        run(&E, 8192, &finite, NULL);
+        CHECK(fabsf(E.sm[SM_AFTERTOUCH] * 3.f - 0.811f) < 0.01f, "MIDI 64 reaches the cutoff stage as %.3f octaves (~0.81)", (double)(E.sm[SM_AFTERTOUCH] * 3.f));
+        tp5_aftertouch(&E, 12);
+        run(&E, 8192, &finite, NULL);
+        CHECK(E.sm[SM_AFTERTOUCH] < 1e-5f, "MIDI 12 is 0 octaves (%.6f)", (double)E.sm[SM_AFTERTOUCH]);
+        tp5_aftertouch(&E, 112);
+        run(&E, 8192, &finite, NULL);
+        CHECK(fabsf(E.sm[SM_AFTERTOUCH] * 3.f - 3.f) < 0.01f, "MIDI 112 reaches the full 3 octaves (%.3f)", (double)(E.sm[SM_AFTERTOUCH] * 3.f));
+    }
     {   /* ... and deepens the LFO */
         int finite = 1;
         fresh(&E, 1);
@@ -840,6 +876,83 @@ static void test_declick(void)
     }
 }
 
+/* ---- stereo spread ------------------------------------------------------------------------------------------------------ */
+
+/* level of one frequency (Hann-windowed Goertzel) in a buffer, dB */
+static double tone_db(const float *x, int n, double hz)
+{
+    double c = 0.0, s = 0.0;
+    int i;
+    for (i = 0; i < n; i++) {
+        const double w = 0.5 - 0.5 * cos(6.283185307179586 * i / n), ph = 6.283185307179586 * hz * i / 44100.0;
+        c += w * x[i] * cos(ph); s += w * x[i] * sin(ph);
+    }
+    return 10.0 * log10((c * c + s * s) / ((double)n * n) + 1e-30);
+}
+
+/* five notes with fundamentals that are not harmonics of one another land on voices 0..4; returns each one's left minus right level in dB (mode 0), or the single
+ * note's in Mono / Legato (mode 2 / 3, voice 0) */
+static void voice_lr(int mode, float spread, double *out)
+{
+    static const int notes[5] = { 60, 67, 64, 71, 62 };
+    static float l[16384], r[16384];
+    int i, n, k, finite = 1;
+    fresh(&E, 0);
+    tp5_set_param(&E, P_CUTOFF, 0.8f); tp5_set_param(&E, P_A_VOL, 1.f); tp5_set_param(&E, P_A_ATK, 0.f); tp5_set_param(&E, P_A_SUS, 1.f);
+    tp5_set_param(&E, P_UNISON, (float)mode);
+    tp5_set_param(&E, P_SPREAD, spread);
+    for (i = 0; i < (mode >= 2 ? 1 : 5); i++) tp5_note_on(&E, notes[i], 100);
+    run(&E, 20000, &finite, NULL);
+    for (n = 0; n < 16384; n += BLOCK) {
+        tp5_render(&E, BL, BR, BLOCK);
+        for (k = 0; k < BLOCK; k++) { l[n + k] = BL[k]; r[n + k] = BR[k]; }
+    }
+    for (i = 0; i < (mode >= 2 ? 1 : 5); i++) {
+        const double hz = 440.0 * pow(2.0, (notes[i] - 69) / 12.0);
+        out[i] = tone_db(l, 16384, hz) - tone_db(r, 16384, hz);
+    }
+}
+
+static void test_spread(void)
+{
+    double full[5], half[5], none[5], mono[1], legato[1];
+    int i;
+    printf("[stereo spread]\n");
+    CHECK(strcmp(tp5_params[P_SPREAD].key, "pan_spread") == 0 && !tp5_is_sound_param(P_SPREAD) && tp5_params[P_SPREAD].def == 1.f, "pan_spread: a performance setting, default 1 (the pan the engine always had)");
+    voice_lr(0, 1.f, full); voice_lr(0, 0.5f, half); voice_lr(0, 0.f, none); voice_lr(2, 1.f, mono); voice_lr(3, 1.f, legato);
+    printf("    left minus right per voice (dB): spread 1:");
+    for (i = 0; i < 5; i++) printf(" %+.2f", full[i]);
+    printf(" | 0.5:");
+    for (i = 0; i < 5; i++) printf(" %+.2f", half[i]);
+    printf(" | 0:");
+    for (i = 0; i < 5; i++) printf(" %+.2f", none[i]);
+    printf(" | Mono %+.2f, Legato %+.2f\n", mono[0], legato[0]);
+    {
+        static const double want[5] = { 2.63, -2.63, 1.31, -1.31, 0.0 };
+        for (i = 0; i < 5; i++) {
+            CHECK(fabs(full[i] - want[i]) < 0.4, "spread 1, voice %d: %+.2f dB, the pan the engine always had is %+.2f", i, full[i], want[i]);
+            CHECK(fabs(half[i] - 0.5 * want[i]) < 0.4, "spread 0.5, voice %d: %+.2f dB, half of %+.2f", i, half[i], want[i]);
+            CHECK(fabs(none[i]) < 0.15, "spread 0 centres voice %d (%+.2f dB)", i, none[i]);
+        }
+    }
+    CHECK(fabs(mono[0]) < 0.15 && fabs(legato[0]) < 0.15, "Mono and Legato are centred (%+.2f / %+.2f dB)", mono[0], legato[0]);
+    {   /* changing mode re-centres smoothly */
+        float prev, worst = 0.f;
+        int n;
+        fresh(&E, 0);
+        tp5_set_param(&E, P_SPREAD, 1.f);
+        run(&E, 4096, NULL, NULL);
+        prev = E.sm[SM_SPREAD];
+        tp5_set_param(&E, P_UNISON, 2.f);
+        for (n = 0; n < 8000; n++) {
+            tp5_render(&E, BL, BR, 1);
+            if (fabsf(E.sm[SM_SPREAD] - prev) > worst) worst = fabsf(E.sm[SM_SPREAD] - prev);
+            prev = E.sm[SM_SPREAD];
+        }
+        CHECK(worst < 0.01f && prev < 1e-6f, "changing mode re-centres smoothly (largest step %.4f, ends at %.6f)", (double)worst, (double)prev);
+    }
+}
+
 static void test_headroom(void)
 {
     int c, r, finite = 1, pid, i;
@@ -951,6 +1064,7 @@ int main(void)
     test_switching();
     test_retrigger();
     test_declick();
+    test_spread();
     test_headroom();
     test_host_surface();
     printf("\n%d checks, %d failed\n", g_checks, g_fail);
