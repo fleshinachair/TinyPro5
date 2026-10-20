@@ -1224,7 +1224,7 @@ static void test_plugin_api(void)
     CHECK(api->get_param(a, "chain_params", buf, 32) == -1, "too-small buffer must report failure, not overrun");
     n = tp5_json_module(big, sizeof big);
     CHECK(n > 0 && n < 8192, "module.json size %d must stay under the loader's 8 KB cap", n);
-    CHECK(json_balanced(big) && strstr(big, "\"id\":\"tinypro5\"") && strstr(big, "\"version\":\"1.1.1\"") &&
+    CHECK(json_balanced(big) && strstr(big, "\"id\":\"tinypro5\"") && strstr(big, "\"version\":\"1.2.0\"") &&
           strstr(big, "\"component_type\":\"sound_generator\"") && strstr(big, "\"api_version\":2") &&
           strstr(big, "\"ui_hierarchy\"") && strstr(big, "\"list_param\""), "module.json content");
     printf("    module.json = %d bytes\n", n);

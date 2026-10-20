@@ -1,5 +1,13 @@
 # TinyPro5 release notes
 
+## 1.2.0
+
+* **Stereo spread:** the five voices have always been panned at fixed positions (voice 1 left, voice 2 right, and so on), which is why successive Poly notes moved left and
+  right and why Mono and Legato sat slightly to the left. Mono and Legato are now centred, and a new **Spread** control (More 2 page, 0 to 1, default 1 = the pan as before)
+  scales the pan of the voices; 0 centres everything. Ten of the factory programs use Mono or Legato, so their stereo image is now centred (their mono sum is unchanged).
+* **Pad pressure (Rev 4):** channel and polyphonic pressure now share one response curve made for the Move pads: pressure up to 12 is ignored, 112 and above is full scale, and in
+  between the response is squared, so a light touch is a gentle swell (MIDI 64 opens the cutoff by 0.8 octave, 112 by the full 3 octaves).
+
 ## 1.1.1
 
 Click fixes for repeated and arpeggiated notes.
